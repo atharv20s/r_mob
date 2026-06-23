@@ -1,6 +1,7 @@
 import unittest
 import sys
 import os
+import bcrypt
 
 # Add parent directory to sys.path so we can import src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -9,7 +10,6 @@ from fastapi.testclient import TestClient
 from src.main import app
 from src.db.session import SessionLocal, Base, engine
 from src.db import models
-from src.core.security import get_password_hash
 
 class TestRouteMobileAPI(unittest.TestCase):
     @classmethod
@@ -31,7 +31,7 @@ class TestRouteMobileAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "healthy")
 
-    def test_user_registration_and_login(self):
+    def test_user_registration_and_login_and_refresh(self):
         # 1. Register User
         reg_payload = {
             "email": "test_api_user@route.com",
@@ -46,13 +46,15 @@ class TestRouteMobileAPI(unittest.TestCase):
         raw_api_key = data["api_key"]
         self.assertTrue(raw_api_key.startswith("sk_"))
 
-        # Check database: only key_hash is stored, raw key is not stored
+        # Check database: verify API key is securely hashed with bcrypt
         db = SessionLocal()
         try:
             db_api_key = db.query(models.APIKey).filter(models.APIKey.user_id == data["id"]).first()
             self.assertIsNotNone(db_api_key)
             self.assertNotEqual(db_api_key.key_hash, raw_api_key)
-            self.assertEqual(db_api_key.key_hash, models.hash_api_key(raw_api_key))
+            self.assertTrue(
+                bcrypt.checkpw(raw_api_key.encode("utf-8"), db_api_key.key_hash.encode("utf-8"))
+            )
         finally:
             db.close()
 
@@ -65,10 +67,23 @@ class TestRouteMobileAPI(unittest.TestCase):
         self.assertEqual(login_response.status_code, 200)
         login_data = login_response.json()
         self.assertIn("access_token", login_data)
+        self.assertIn("refresh_token", login_data)
         access_token = login_data["access_token"]
+        refresh_token = login_data["refresh_token"]
 
-        # 3. Get /me with JWT token
-        headers = {"Authorization": f"Bearer {access_token}"}
+        # 3. Refresh Access Token
+        refresh_payload = {
+            "refresh_token": refresh_token
+        }
+        refresh_response = self.client.post("/api/v1/auth/refresh", json=refresh_payload)
+        self.assertEqual(refresh_response.status_code, 200)
+        refresh_data = refresh_response.json()
+        self.assertIn("access_token", refresh_data)
+        self.assertIn("refresh_token", refresh_data)
+        new_access_token = refresh_data["access_token"]
+
+        # 4. Get /me with the new JWT token
+        headers = {"Authorization": f"Bearer {new_access_token}"}
         me_response = self.client.get("/api/v1/usage/me", headers=headers)
         self.assertEqual(me_response.status_code, 200)
         me_data = me_response.json()

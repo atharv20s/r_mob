@@ -4,11 +4,12 @@ from pydantic import BaseModel
 import hashlib
 import time
 import datetime
+import uuid
 
 from src.db.models import User, AuditLog, UsageRecord
 from src.core.deps import get_db, get_current_user, check_rate_limit
 from src.services.redis_service import redis_service
-from src.services.ai_service import ai_service
+from src.services.ai.factory import AIProviderFactory
 
 router = APIRouter()
 
@@ -27,7 +28,7 @@ class ChatResponse(BaseModel):
     usage: ChatResponseUsage
 
 @router.post("", response_model=ChatResponse)
-def chat_completion(
+async def chat_completion(
     payload: ChatRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -35,7 +36,7 @@ def chat_completion(
     _rate_limit: None = Depends(check_rate_limit)
 ):
     """
-    Send messages directly to Mistral AI with authentication,
+    Send messages directly to Mistral AI (asynchronously) with authentication,
     rate limiting, caching, and database audit logs.
     """
     prompt = payload.prompt.strip()
@@ -44,6 +45,11 @@ def chat_completion(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Prompt cannot be empty."
         )
+
+    # Extract metadata for enterprise logging
+    ip_address = request.client.host if request.client else "127.0.0.1"
+    user_agent = request.headers.get("user-agent")
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
 
     # 1. Search for response in Redis cache
     prompt_hash = hashlib.md5(prompt.encode("utf-8")).hexdigest()
@@ -57,15 +63,18 @@ def chat_completion(
             endpoint="/api/v1/chat",
             method="POST",
             status_code=200,
-            latency_ms=1
+            latency_ms=1,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            request_id=request_id
         )
         db.add(audit_log)
         
-        # Increment usage
-        today_str = datetime.date.today().isoformat()
-        usage_rec = db.query(UsageRecord).filter(UsageRecord.user_id == user.id, UsageRecord.date == today_str).first()
+        # Increment usage (date is now a Date object)
+        today = datetime.date.today()
+        usage_rec = db.query(UsageRecord).filter(UsageRecord.user_id == user.id, UsageRecord.date == today).first()
         if not usage_rec:
-            usage_rec = UsageRecord(user_id=user.id, date=today_str, request_count=1)
+            usage_rec = UsageRecord(user_id=user.id, date=today, request_count=1)
             db.add(usage_rec)
         else:
             usage_rec.request_count += 1
@@ -75,9 +84,10 @@ def chat_completion(
         cached_data["cached"] = True
         return cached_data
 
-    # 2. Cache miss — call Mistral API
+    # 2. Cache miss — call Mistral AI client asynchronously
+    mistral_service = AIProviderFactory.get("mistral")
     start_time = time.time()
-    res = ai_service.generate_text(prompt=prompt, provider="mistral")
+    res = await mistral_service.generate_text(prompt=prompt)
     latency_ms = int((time.time() - start_time) * 1000)
 
     if not res.get("success", False):
@@ -86,7 +96,10 @@ def chat_completion(
             endpoint="/api/v1/chat",
             method="POST",
             status_code=400,
-            latency_ms=latency_ms
+            latency_ms=latency_ms,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            request_id=request_id
         )
         db.add(audit_log)
         db.commit()
@@ -101,13 +114,16 @@ def chat_completion(
         endpoint="/api/v1/chat",
         method="POST",
         status_code=200,
-        latency_ms=latency_ms
+        latency_ms=latency_ms,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        request_id=request_id
     )
     db.add(audit_log)
 
     # 4. Log token usage
-    today_str = datetime.date.today().isoformat()
-    usage_rec = db.query(UsageRecord).filter(UsageRecord.user_id == user.id, UsageRecord.date == today_str).first()
+    today = datetime.date.today()
+    usage_rec = db.query(UsageRecord).filter(UsageRecord.user_id == user.id, UsageRecord.date == today).first()
     
     tokens = res.get("usage", {})
     prompt_t = tokens.get("prompt_tokens", 0)
@@ -117,7 +133,7 @@ def chat_completion(
     if not usage_rec:
         usage_rec = UsageRecord(
             user_id=user.id,
-            date=today_str,
+            date=today,
             request_count=1,
             input_tokens=prompt_t,
             output_tokens=completion_t,

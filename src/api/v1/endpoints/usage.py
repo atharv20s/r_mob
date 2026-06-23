@@ -23,7 +23,7 @@ class UserMeResponse(BaseModel):
 
 class UsageResponse(BaseModel):
     id: int
-    date: str
+    date: datetime.date
     request_count: int
     input_tokens: int
     output_tokens: int

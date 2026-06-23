@@ -52,7 +52,7 @@ try:
         # Seed API key for admin
         admin_key = models.APIKey(
             user_id=admin_user.id,
-            key_hash=models.hash_api_key("sk_admin_test_key_12345"),
+            key_hash=get_password_hash("sk_admin_test_key_12345"),
             plan_id=ent_plan.id,
             is_active=True
         )
@@ -79,7 +79,7 @@ try:
         # Seed API key for user
         user_key = models.APIKey(
             user_id=normal_user.id,
-            key_hash=models.hash_api_key("sk_user_test_key_12345"),
+            key_hash=get_password_hash("sk_user_test_key_12345"),
             plan_id=free_plan.id,
             is_active=True
         )

@@ -5,7 +5,7 @@ from typing import Generator
 import jwt
 
 from src.db.session import SessionLocal
-from src.db.models import User, APIKey, Plan
+from src.db.models import User, APIKey, Plan, UserRole
 from src.core.config import settings
 from src.core.security import decode_access_token
 from src.services.redis_service import redis_service
@@ -86,10 +86,9 @@ def check_rate_limit(
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
     """Dependency that checks if the current authenticated user has admin privileges."""
-    if user.role != "admin":
+    if user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Operation not permitted. Admin role required."
         )
     return user
-

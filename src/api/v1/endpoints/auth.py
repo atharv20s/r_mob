@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-import uuid
+import secrets
 from pydantic import BaseModel, EmailStr
 
-from src.db.models import User, APIKey, Plan, hash_api_key
+from src.db.models import User, APIKey, Plan
 from src.core import security
 from src.core.deps import get_db, oauth2_scheme
 from src.services.redis_service import redis_service
@@ -24,6 +24,14 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str
 
 @router.post("/register", response_model=UserResponse)
 def register(user_in: UserRegister, db: Session = Depends(get_db)):
@@ -53,11 +61,11 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
             detail="Free plan not seeded in the database."
         )
 
-    # Generate API key — store only the SHA-256 hash
-    raw_api_key = f"sk_{uuid.uuid4().hex}"
+    # Generate API key — store only the bcrypt hash
+    raw_api_key = f"sk_{secrets.token_urlsafe(48)}"
     new_api_key = APIKey(
         user_id=new_user.id,
-        key_hash=hash_api_key(raw_api_key),
+        key_hash=security.get_password_hash(raw_api_key),
         plan_id=free_plan.id,
         is_active=True
     )
@@ -72,12 +80,12 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
         "api_key": raw_api_key  # returned ONCE, never stored raw
     }
 
-@router.post("/login")
+@router.post("/login", response_model=TokenResponse)
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
-    """Authenticate email and password, returning a JWT access token."""
+    """Authenticate email and password, returning JWT access and refresh tokens."""
     user = db.query(User).filter(User.email == form_data.username).first()
     if not user or not security.verify_password(form_data.password, user.password_hash):
         raise HTTPException(
@@ -86,9 +94,45 @@ def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    access_token = security.create_access_token(subject=user.id)
+    access_token = security.create_access_token(
+        subject=user.id,
+        email=user.email,
+        role=user.role
+    )
+    refresh_token = security.create_refresh_token(subject=user.id)
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh(payload: TokenRefreshRequest, db: Session = Depends(get_db)):
+    """Exchange a refresh token for new access and refresh tokens."""
+    user_id_str = security.decode_refresh_token(payload.refresh_token)
+    if not user_id_str:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token."
+        )
+    
+    user_id = int(user_id_str)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User is inactive or not found."
+        )
+        
+    access_token = security.create_access_token(
+        subject=user.id,
+        email=user.email,
+        role=user.role
+    )
+    new_refresh_token = security.create_refresh_token(subject=user.id)
+    return {
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
         "token_type": "bearer"
     }
 

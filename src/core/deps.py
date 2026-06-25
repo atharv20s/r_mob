@@ -1,11 +1,13 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import Generator
 import jwt
+from datetime import datetime, UTC
 
 from src.db.session import SessionLocal
-from src.db.models import User, APIKey, Plan, UserRole
+from src.db.models import User, APIKey, Plan, UserRole, UsageRecord
 from src.core.config import settings
 from src.core.security import decode_access_token
 from src.services.redis_service import redis_service
@@ -67,7 +69,7 @@ def check_rate_limit(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> None:
-    """Dependency that applies Redis-based rate limiting (10 req/sec by default)."""
+    """Dependency that applies Redis-based rate limiting and quota enforcement."""
     # Find user plan from API Key
     api_key_record = db.query(APIKey).filter(APIKey.user_id == user.id, APIKey.is_active == True).first()
     if api_key_record and api_key_record.plan_rel:
@@ -81,7 +83,35 @@ def check_rate_limit(
     if not allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Allowed: {limit} req/sec."
+            detail="Rate limit exceeded"
+        )
+
+    # Daily Quota Enforcement via Redis
+    today_str = datetime.now(UTC).date().isoformat()
+    daily_quota = plan_record.daily_quota if plan_record else 1000
+    current_usage = redis_service.get_quota(user.id, today_str)
+
+    if current_usage >= daily_quota:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Daily quota exceeded"
+        )
+
+    # Monthly Quota Enforcement via SQLAlchemy (historical data)
+    today = datetime.now(UTC).date()
+    start_of_month = today.replace(day=1)
+
+    monthly_usage = db.query(func.sum(UsageRecord.request_count)).filter(
+        UsageRecord.user_id == user.id,
+        UsageRecord.date >= start_of_month
+    ).scalar() or 0
+
+    monthly_quota = plan_record.monthly_quota if plan_record else 30000
+
+    if monthly_usage >= monthly_quota:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Monthly quota exceeded. Allowed: {monthly_quota} requests/month."
         )
 
 def require_admin(user: User = Depends(get_current_user)) -> User:

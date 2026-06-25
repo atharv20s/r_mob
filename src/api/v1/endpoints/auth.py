@@ -2,11 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 import secrets
+import jwt as pyjwt
+from datetime import datetime, UTC
 from pydantic import BaseModel, EmailStr
 
-from src.db.models import User, APIKey, Plan
+from src.db.models import User, APIKey, Plan, hash_api_key
 from src.core import security
-from src.core.deps import get_db, oauth2_scheme
+from src.core.config import settings
+from src.core.deps import get_db, get_current_user, oauth2_scheme
 from src.services.redis_service import redis_service
 
 router = APIRouter()
@@ -61,11 +64,11 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
             detail="Free plan not seeded in the database."
         )
 
-    # Generate API key — store only the bcrypt hash
+    # Generate API key — store only the SHA-256 hash
     raw_api_key = f"sk_{secrets.token_urlsafe(48)}"
     new_api_key = APIKey(
         user_id=new_user.id,
-        key_hash=security.get_password_hash(raw_api_key),
+        key_hash=hash_api_key(raw_api_key),
         plan_id=free_plan.id,
         is_active=True
     )
@@ -100,6 +103,14 @@ def login(
         role=user.role
     )
     refresh_token = security.create_refresh_token(subject=user.id)
+
+    # Create Redis session (Phase 5)
+    redis_service.set_session(user.id, {
+        "user_id": user.id,
+        "email": user.email,
+        "role": user.role,
+    })
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -138,6 +149,38 @@ def refresh(payload: TokenRefreshRequest, db: Session = Depends(get_db)):
 
 @router.post("/logout")
 def logout(token: str = Depends(oauth2_scheme)):
-    """Revoke the current JWT access token by blacklisting it in Redis."""
-    redis_service.blacklist_token(token, expires_in_sec=1800)
+    """Revoke the current JWT by blacklisting it with TTL = remaining token lifetime."""
+    try:
+        payload = pyjwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            audience="route-mobile-api",
+            issuer="route-mobile",
+        )
+        exp_timestamp = payload.get("exp", 0)
+        now = int(datetime.now(UTC).timestamp())
+        remaining = max(exp_timestamp - now, 1)  # at least 1 second
+    except Exception:
+        remaining = 1800  # fallback: 30 min
+
+    redis_service.blacklist_token(token, expires_in_sec=remaining)
     return {"message": "Successfully logged out"}
+
+@router.get("/check")
+def check_auth(token: str = Depends(oauth2_scheme)):
+    """Verify if the current JWT is still valid (not blacklisted, not expired)."""
+    # Check blacklist
+    if redis_service.is_token_blacklisted(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked/logged out."
+        )
+    # Validate JWT
+    user_id = security.decode_access_token(token)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token."
+        )
+    return {"status": "valid", "user_id": user_id}

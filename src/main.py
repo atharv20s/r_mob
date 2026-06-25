@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+import uuid
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import settings
 from src.api.v1.router import api_router
@@ -14,11 +16,11 @@ Base.metadata.create_all(bind=engine)
 # Seed database with the tiered plan limits and test users
 db = SessionLocal()
 try:
-    # 1. Seed plans (free, pro, enterprise)
+    # 1. Seed plans (free, pro, enterprise) — values match enterprise spec
     plans = {
-        "free": {"requests_per_sec": 5, "daily_quota": 100, "monthly_quota": 3000},
-        "pro": {"requests_per_sec": 20, "daily_quota": 5000, "monthly_quota": 150000},
-        "enterprise": {"requests_per_sec": 100, "daily_quota": 50000, "monthly_quota": 1500000}
+        "free": {"requests_per_sec": 5, "daily_quota": 1000, "monthly_quota": 30000},
+        "pro": {"requests_per_sec": 10, "daily_quota": 10000, "monthly_quota": 300000},
+        "enterprise": {"requests_per_sec": 50, "daily_quota": 100000, "monthly_quota": 3000000}
     }
     for plan_name, specs in plans.items():
         plan_rec = db.query(models.Plan).filter(models.Plan.name == plan_name).first()
@@ -32,6 +34,12 @@ try:
             db.add(plan_rec)
             db.commit()
             print(f"Database initialized: {plan_name} plan seeded.")
+        else:
+            # Update existing plan to match spec
+            plan_rec.requests_per_sec = specs["requests_per_sec"]
+            plan_rec.daily_quota = specs["daily_quota"]
+            plan_rec.monthly_quota = specs["monthly_quota"]
+            db.commit()
 
     # 2. Seed Admin User
     admin_user = db.query(models.User).filter(models.User.email == "admin@route.com").first()
@@ -90,11 +98,30 @@ try:
 finally:
     db.close()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup / shutdown lifecycle. Validates Redis on boot."""
+    from src.services.redis_service import redis_service
+
+    if not redis_service.ping():
+        if settings.REDIS_REQUIRED:
+            raise RuntimeError(
+                "[ERROR] Redis is required but not reachable. "
+                "Set REDIS_REQUIRED=false to allow startup without Redis."
+            )
+        print("[WARN] Redis unavailable at startup — running in degraded mode.")
+    else:
+        print("[OK] Redis health check passed at startup.")
+    yield
+
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # Set CORS origins
@@ -105,6 +132,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def add_correlation_id(request: Request, call_next):
+    correlation_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    request.state.request_id = correlation_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = correlation_id
+    return response
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 

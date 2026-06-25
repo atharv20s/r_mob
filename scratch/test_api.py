@@ -1,7 +1,6 @@
 import unittest
 import sys
 import os
-import bcrypt
 
 # Add parent directory to sys.path so we can import src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -52,8 +51,8 @@ class TestRouteMobileAPI(unittest.TestCase):
             db_api_key = db.query(models.APIKey).filter(models.APIKey.user_id == data["id"]).first()
             self.assertIsNotNone(db_api_key)
             self.assertNotEqual(db_api_key.key_hash, raw_api_key)
-            self.assertTrue(
-                bcrypt.checkpw(raw_api_key.encode("utf-8"), db_api_key.key_hash.encode("utf-8"))
+            self.assertEqual(
+                models.hash_api_key(raw_api_key), db_api_key.key_hash
             )
         finally:
             db.close()
@@ -130,6 +129,57 @@ class TestRouteMobileAPI(unittest.TestCase):
         }
         chat_response = self.client.post("/api/v1/chat", json=chat_payload, headers=headers)
         self.assertIn(chat_response.status_code, [200, 400])
+
+    def test_correlation_id(self):
+        # Health check should return X-Request-ID
+        response = self.client.get("/")
+        self.assertIn("x-request-id", response.headers)
+        request_id = response.headers["x-request-id"]
+        self.assertTrue(len(request_id) > 0)
+
+    def test_quota_enforcement(self):
+        login_payload = {
+            "username": "user@route.com",
+            "password": "userpassword"
+        }
+        login_response = self.client.post("/api/v1/auth/login", data=login_payload)
+        self.assertEqual(login_response.status_code, 200)
+        token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Inject usage to exceed daily quota (100)
+        from datetime import datetime, UTC
+        db = SessionLocal()
+        try:
+            user = db.query(models.User).filter(models.User.email == "user@route.com").first()
+            self.assertIsNotNone(user)
+            today = datetime.now(UTC).date()
+            usage = models.UsageRecord(
+                user_id=user.id,
+                date=today,
+                request_count=150
+            )
+            db.add(usage)
+            db.commit()
+        finally:
+            db.close()
+
+        # Hit /chat endpoint which uses check_rate_limit
+        chat_payload = {"prompt": "Hello!"}
+        chat_response = self.client.post("/api/v1/chat", json=chat_payload, headers=headers)
+        
+        # Should be blocked by quota
+        self.assertEqual(chat_response.status_code, 429)
+        self.assertIn("Daily quota exceeded", chat_response.json()["detail"])
+
+        # Clean up the injected usage
+        db = SessionLocal()
+        try:
+            user = db.query(models.User).filter(models.User.email == "user@route.com").first()
+            db.query(models.UsageRecord).filter(models.UsageRecord.user_id == user.id, models.UsageRecord.request_count == 150).delete()
+            db.commit()
+        finally:
+            db.close()
 
 if __name__ == "__main__":
     unittest.main()

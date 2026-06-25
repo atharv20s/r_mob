@@ -95,7 +95,7 @@ def get_audit_logs(
     db: Session = Depends(get_db)
 ):
     """[Admin Only] Retrieve all system audit logs."""
-    logs = db.query(AuditLog).order_by(AuditLog.created_at.desc()).all()
+    logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).all()
     return logs
 
 @router.get("/users", response_model=List[UserListResponse])

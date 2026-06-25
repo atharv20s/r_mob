@@ -51,9 +51,9 @@ async def chat_completion(
     user_agent = request.headers.get("user-agent")
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
 
-    # 1. Search for response in Redis cache
-    prompt_hash = hashlib.md5(prompt.encode("utf-8")).hexdigest()
-    cache_key = f"chat:{prompt_hash}"
+    # 1. Search for response in Redis cache (SHA-256 key)
+    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    cache_key = prompt_hash  # Redis key will be cache:{sha256}
     
     cached_data = redis_service.get_cache(cache_key)
     if cached_data:
@@ -80,7 +80,11 @@ async def chat_completion(
             usage_rec.request_count += 1
         
         db.commit()
-        
+
+        # Increment Redis daily quota
+        today_str = datetime.date.today().isoformat()
+        redis_service.increment_quota(user.id, today_str)
+
         cached_data["cached"] = True
         return cached_data
 
@@ -147,6 +151,10 @@ async def chat_completion(
 
     db.commit()
 
+    # Increment Redis daily quota
+    today_str = datetime.date.today().isoformat()
+    redis_service.increment_quota(user.id, today_str)
+
     # 5. Build response
     response_payload = {
         "response": res.get("text", ""),
@@ -159,7 +167,7 @@ async def chat_completion(
         }
     }
 
-    # 6. Cache in Redis (5 min TTL)
-    redis_service.set_cache(cache_key, response_payload, expires_in_sec=300)
+    # 6. Cache in Redis (600s TTL per spec)
+    redis_service.set_cache(cache_key, response_payload, expires_in_sec=600)
 
     return response_payload

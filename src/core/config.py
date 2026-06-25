@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # Cache & Persistence
     DATABASE_URL: str = "sqlite:///./route_mobile.db"
     REDIS_URL: str = "redis://localhost:6379"
+    REDIS_REQUIRED: bool = True
     
     # JWT Authentication Settings
     JWT_SECRET: str = "default_secret_key_change_me"

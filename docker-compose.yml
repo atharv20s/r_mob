@@ -9,8 +9,8 @@ services:
       - PROJECT_NAME=Route Mobile API
       - DATABASE_URL=postgresql+psycopg2://postgres:postgres_password@db:5432/ai_gateway
       - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=e42fa521f57912187bc9ba6f196bcf72e1ab5a7828de3e40776b6d51111956e1
-      - MISTRAL_API_KEY=EuOhDKAse8czGM9Z7Du7Edk98MsuUPcd
+      - JWT_SECRET=${JWT_SECRET}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - DEFAULT_MODEL=gemini-1.5-flash
     depends_on:
       - db

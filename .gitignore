@@ -46,3 +46,9 @@ venv.bak/
 # Databases
 *.db
 
+# Test outputs
+test_results.json
+test_rate_limit_results.json
+test_cache_results.json
+demo_evidence_report.txt
+redis_validation_report.md

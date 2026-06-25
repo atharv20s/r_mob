@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 from enum import Enum as PyEnum
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Date, Enum as SqlEnum
 from sqlalchemy.orm import relationship
@@ -8,6 +9,11 @@ from src.db.session import Base
 class UserRole(str, PyEnum):
     ADMIN = "admin"
     USER = "user"
+
+
+def hash_api_key(raw_key: str) -> str:
+    """Hash an API key with SHA-256. Secure for high entropy random keys."""
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
 class User(Base):

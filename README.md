@@ -2,39 +2,64 @@
 
 FastAPI backend with **real Redis-backed** rate limiting, response caching, JWT blacklisting, session management, and daily quota enforcement.
 
-## Architecture
+---
+
+## ⚡ Production-Grade Architecture (Redis-First)
+
+The architecture is optimized to keep SQL databases out of the request hot-path, achieving low latency and horizontal scalability.
 
 ```
-Client → FastAPI → Redis (Rate Limit + Cache + Sessions + Quotas + JWT Blacklist) → Mistral AI
-                 → SQLAlchemy (Audit Logs + Usage Records + Plans + Users)
+Request Hot-Path (0 SQL Queries for 95% of requests):
+Client ──► JWT Verify ──► Redis Blacklist Check ──► Redis Session Look-up (Plan & Limits)
+                                                        │
+ Client ◄─── Rate Limit Exceeded (429) ◄── [ZSET Sliding Window]
+                                                        │
+ Client ◄─── Quota Exceeded (429) ◄───────── [Daily Quota INCR]
+                                                        │
+ Client ◄─── [Cache HIT] ◄───────────────── [Cache (Provider:Model:Hash)]
+                                                        │ (Cache MISS)
+                                                        ▼
+ Client ◄─── Response ◄─── Audit Buffer ◄──── Mistral AI (Async Completion)
 ```
 
-## Features
+```
+Background Synchronization Loop (60s tick):
+[Redis usage:* counters] ──► [usage_flusher.py] ──► [UsageRecord SQL Table] (Upsert)
+[Redis audit:buffer LIST] ──► [usage_flusher.py] ──► [AuditLog SQL Table] (Bulk-Insert)
+```
 
-- **Authentication**: JWT access + refresh tokens with Redis-backed blacklist on logout
-- **Redis Rate Limiting**: Per-plan limits enforced via `INCR + EXPIRE` (Free: 5/s, Pro: 10/s, Enterprise: 50/s)
-- **Redis Response Cache**: SHA-256 keyed, 600s TTL, hit/miss tracking
-- **Redis Sessions**: User session stored on login (24h TTL)
-- **Redis Daily Quotas**: Per-user per-day counters (Free: 1000, Pro: 10000, Enterprise: 100000)
-- **Audit Logs**: Every request logged to SQLAlchemy with latency, IP, user agent
-- **Mistral AI**: Async chat completions with retry + backoff
+---
 
-## Prerequisites
+## 🌟 Key Features
+
+- **0-SQL Hot Path**: User plan parameters (`rps`, `daily_quota`, `monthly_quota`) are cached directly inside the Redis Session Hash on login/refresh. Requests read limits and enforce quotas entirely via Redis.
+- **Batched Database Synchronization**:
+  - **Usage Counter Aggregation**: Per-request token and request counts increment atomically inside a Redis Hash (`usage:{user_id}:{date}`) and are flushed to SQLite/Postgres once per minute.
+  - **Buffered Audit Logs**: API audits are pushed to a Redis List (`audit:buffer`) and bulk-inserted into the database every 60 seconds.
+- **Richer Cache Keys**: Cached responses are uniquely identified by a SHA-256 hash of the `prompt`, `temperature`, `system_prompt`, and `top_p` scoped under `cache:{provider}:{model}:{hash}` to avoid configuration collisions.
+- **Conversation Inactivity TTL**: Conversation context `LIST` keys expire automatically after 1 hour of inactivity, protecting Redis memory from unbounded growth.
+- **Sliding-Window Rate Limiting**: Enforced using Sorted Sets (`ZSET`) to ensure strict rate compliance over standard fixed windows.
+- **Gateway Observability**: A dedicated `stats:gateway` Hash tracks requests, cache hits, misses, rate limits, errors, and average LLM latency in real time.
+
+---
+
+## 🛠️ Prerequisites
 
 - Python 3.10+
 - Docker Desktop (for Redis)
 - Git
 
-## Quick Start
+---
 
-### 1. Start Redis (REQUIRED)
+## 🚀 Quick Start
+
+### 1. Start Redis
 
 ```bash
 docker compose up -d redis
 ```
 
-Verify Redis is running:
-
+Verify connection:
 ```bash
 docker exec -it route_mobile-redis-1 redis-cli ping
 # Expected: PONG
@@ -51,7 +76,7 @@ pip install -r requirements.txt
 
 ### 3. Configure Environment
 
-Create a `.env` file in the root directory with the following structure:
+Create a `.env` file in the root directory:
 
 ```ini
 # FastAPI Settings
@@ -82,106 +107,68 @@ JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 
-Edit the `.env` with your API keys and configuration settings.
-
 ### 4. Run the Server
 
 ```bash
 uvicorn src.main:app --reload
 ```
 
-### 5. Open Docs
+The background usage+audit flusher task starts automatically on application startup.
 
-Navigate to http://127.0.0.1:8000/docs
+### 5. Open Interactive Documentation
 
-## Redis Verification
+Navigate to http://127.0.0.1:8000/docs or open the local dashboard at http://127.0.0.1:8000/portal.
 
-### Health Check
+---
 
+## 📊 Redis Key Schemas
+
+Verify keys inside Redis:
 ```bash
-curl http://localhost:8000/api/v1/health/redis
-# {"status":"healthy","redis":"connected"}
+docker exec -it route_mobile-redis-1 redis-cli
 ```
 
-### Inspect Redis Keys (Admin)
+| Key Pattern | Data Structure | Purpose | TTL |
+|---|---|---|---|
+| `session:{user_id}` | `HASH` | User profile + plan limits | 30 minutes |
+| `blacklist:{jwt_token}` | `STRING` | Revoked access tokens | Remaining lifetime |
+| `cache:{provider}:{model}:{sha256}` | `STRING` | Cached LLM responses | 10 minutes |
+| `context:{user_id}` | `LIST` | Conversation message history (Max 40) | 1 hour |
+| `rate_limit_slide:{user_id}` | `ZSET` | Sliding-window timestamps | 6 seconds |
+| `quota:{user_id}:{date}` | `STRING` | Daily usage quota counter | 48 hours |
+| `usage:{user_id}:{date}` | `HASH` | Aggregated requests and tokens | 48 hours |
+| `audit:buffer` | `LIST` | Buffered audit records | Drained every 60s |
+| `stats:gateway` | `HASH` | Global gateway traffic metrics | Indefinite |
 
-```bash
-# Via API (requires admin JWT)
-curl -H "Authorization: Bearer <admin_token>" http://localhost:8000/api/v1/admin/redis/keys
+---
 
-# Via redis-cli
-docker exec -it route_mobile-redis-1 redis-cli KEYS "*"
-```
+## 📈 Monitoring & Admin API Endpoints
 
-Expected key patterns:
-```
-blacklist:{jwt_token}
-cache:{sha256_hash}
-rate_limit:{user_id}
-session:{user_id}
-quota:{user_id}:{date}
-stats:cache_hits
-stats:cache_misses
-```
-
-## Running Tests
-
-### Full Test Suite
-
-```bash
-python test_redis_enterprise.py
-```
-
-### Rate Limit Tests (explicit assertions)
-
-```bash
-python test_rate_limit.py
-```
-
-### Cache Tests (explicit assertions)
-
-```bash
-python test_cache.py
-```
-
-### Evidence Generation
-
-```bash
-python demo_redis_evidence.py
-# Outputs: demo_evidence_report.txt
-
-python generate_validation_report.py
-# Outputs: redis_validation_report.md
-```
-
-## API Endpoints
+All admin endpoints require an Authorization Header with an Admin JWT.
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/auth/register` | Register new user |
-| POST | `/api/v1/auth/login` | Login (returns JWT) |
-| POST | `/api/v1/auth/logout` | Logout (blacklists JWT) |
-| POST | `/api/v1/auth/refresh` | Refresh tokens |
-| GET  | `/api/v1/auth/check` | Verify token validity |
-| POST | `/api/v1/chat` | Chat completion (cached) |
-| GET  | `/api/v1/usage/me` | Current user info |
-| GET  | `/api/v1/usage/usage` | Usage statistics |
-| GET  | `/api/v1/me/session` | Redis session data |
-| GET  | `/api/v1/health/redis` | Redis health check |
-| GET  | `/api/v1/admin/redis/rate-limit` | Active rate limit keys |
-| GET  | `/api/v1/admin/redis/keys` | All Redis key counts |
-| GET  | `/api/v1/admin/cache/stats` | Cache hit/miss stats |
+|---|---|---|
+| GET | `/api/v1/admin/redis/gateway-stats` | Live traffic metrics (hits, misses, latency, errors) |
+| GET | `/api/v1/admin/redis/audit-buffer` | Pending audit queue depth |
+| GET | `/api/v1/admin/redis/inspect` | Full Redis key inspector (for portal dashboard) |
+| GET | `/api/v1/admin/redis/keys` | Count of active keys by prefix |
+| GET | `/api/v1/admin/cache/stats` | Cache hit/miss/ratio stats |
+| GET | `/api/v1/admin/redis/info` | Redis engine version, memory, uptime |
+| DELETE | `/api/v1/admin/redis/flush` | Flush all keys in DB (Development only) |
 
-## Postman
+---
 
-Import both files into Postman:
-- `postman_collection.json` — All API requests
-- `postman_environment.json` — Variables (base_url, access_token, admin_token)
+## 🧪 Testing
 
-## Docker Compose (Full Stack)
+Run tests to verify correct Redis behavior, rate limiting, and caching policies:
 
 ```bash
-docker compose up -d
-```
+# Run comprehensive rate limit validations
+python test_rate_limit.py
 
-Services: `web` (FastAPI), `db` (PostgreSQL), `redis` (Redis 7 Alpine)
+# Run response cache validations
+python test_cache.py
+
+# Run full project validations and print results
+python test_redis_enterprise.py
+```

@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Route Mobile — Developer Portal</title>
+  <meta name="description" content="Route Mobile API developer portal — login, chat, session info, Redis inspector for admins." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    /* ─── Design tokens ───────────────────────────────────── */
+    :root {
+      --bg:          #0a0b10;
+      --surface:     #11131d;
+      --surface-2:   #181b28;
+      --surface-3:   #1f2235;
+      --border:      rgba(255,255,255,.07);
+      --border-glow: rgba(99,179,237,.25);
+
+      --accent:      #63b3ed;
+      --accent-2:    #9f7aea;
+      --accent-3:    #68d391;
+      --accent-err:  #fc8181;
+      --accent-warn: #f6ad55;
+
+      --text:        #e2e8f0;
+      --text-muted:  #718096;
+      --text-dim:    #4a5568;
+
+      --radius:      10px;
+      --radius-lg:   16px;
+      --shadow:      0 4px 32px rgba(0,0,0,.5);
+
+      --hit-color:   #68d391;
+      --miss-color:  #fc8181;
+      --cached-color:#f6ad55;
+
+      --font:        'Inter', system-ui, sans-serif;
+      --mono:        'JetBrains Mono', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* ─── Scrollbar ───────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--surface); }
+    ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 4px; }
+
+    /* ─── Utility ─────────────────────────────────────────── */
+    .hidden { display: none !important; }
+    .mono   { font-family: var(--mono); }
+    .muted  { color: var(--text-muted); }
+
+    /* ─── Login screen ────────────────────────────────────── */
+    #login-screen {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background:
+        radial-gradient(ellipse 80% 60% at 50% -10%, rgba(99,179,237,.12) 0%, transparent 70%),
+        var(--bg);
+    }
+
+    .login-card {
+      width: 100%;
+      max-width: 420px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 40px 36px 36px;
+      box-shadow: var(--shadow);
+    }
+
+    .login-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .login-logo .dot {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px;
+    }
+    .login-logo h1 { font-size: 18px; font-weight: 600; }
+    .login-logo span { font-size: 12px; color: var(--text-muted); display: block; }
+
+    .field { margin-bottom: 16px; }
+    .field label { display: block; font-size: 12px; font-weight: 500; color: var(--text-muted); margin-bottom: 6px; letter-spacing: .04em; text-transform: uppercase; }
+
+    .field input, .chat-input, #prompt-text {
+      width: 100%;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      padding: 10px 14px;
+      transition: border-color .2s, box-shadow .2s;
+      outline: none;
+    }
+    .field input:focus, .chat-input:focus, #prompt-text:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(99,179,237,.12);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 20px;
+      border-radius: var(--radius);
+      border: none;
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 14px;
+      font-weight: 500;
+      transition: opacity .2s, transform .1s, box-shadow .2s;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+      width: 100%;
+    }
+    .btn-primary:hover { opacity: .9; box-shadow: 0 4px 20px rgba(99,179,237,.25); }
+    .btn-sm { padding: 6px 14px; font-size: 12px; }
+    .btn-danger { background: rgba(252,129,129,.15); color: var(--accent-err); border: 1px solid rgba(252,129,129,.3); }
+    .btn-danger:hover { background: rgba(252,129,129,.25); }
+    .btn-ghost { background: var(--surface-3); color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost:hover { background: var(--surface-2); }
+
+    #login-error {
+      margin-top: 12px;
+      color: var(--accent-err);
+      font-size: 13px;
+      text-align: center;
+      min-height: 20px;
+    }
+
+    /* ─── Main shell ──────────────────────────────────────── */
+    #app {
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ─── Sidebar ─────────────────────────────────────────── */
+    #sidebar {
+      width: 220px;
+      flex-shrink: 0;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 20px 12px;
+      gap: 4px;
+    }
+
+    .sidebar-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 10px 16px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 8px;
+    }
+    .sidebar-logo .dot { width: 24px; height: 24px; border-radius: 6px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+    .sidebar-logo span { font-size: 13px; font-weight: 600; }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 500;
+      transition: background .15s, color .15s;
+      user-select: none;
+    }
+    .nav-item:hover { background: var(--surface-2); color: var(--text); }
+    .nav-item.active { background: rgba(99,179,237,.12); color: var(--accent); }
+    .nav-item .icon { width: 16px; text-align: center; font-size: 15px; }
+
+    .nav-section {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding: 12px 12px 4px;
+    }
+
+    .sidebar-footer {
+      margin-top: auto;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+    .user-badge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+    .user-avatar {
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-2), var(--accent));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 600; color: #fff;
+      flex-shrink: 0;
+    }
+    .user-info { overflow: hidden; }
+    .user-email { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .user-role {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .role-admin { color: var(--accent-2); }
+    .role-user  { color: var(--accent); }
+
+    /* ─── Main content ────────────────────────────────────── */
+    #main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 32px 36px;
+      background:
+        radial-gradient(ellipse 60% 40% at 80% 0%, rgba(99,179,237,.05) 0%, transparent 60%),
+        var(--bg);
+    }
+
+    .page { display: none; }
+    .page.active { display: block; }
+
+    .page-header { margin-bottom: 28px; }
+    .page-header h2 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+    .page-header p { color: var(--text-muted); font-size: 13px; }
+
+    /* ─── Cards ───────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-title .dot-indicator {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent-3);
+      box-shadow: 0 0 6px var(--accent-3);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.4;} }
+
+    /* ─── KV grid (session data) ──────────────────────────── */
+    .kv-grid {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 8px 16px;
+    }
+    .kv-label { color: var(--text-muted); font-size: 12px; padding-top: 2px; }
+    .kv-value { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+
+    /* ─── Badge chips ─────────────────────────────────────── */
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .chip-green  { background: rgba(104,211,145,.15); color: var(--accent-3); }
+    .chip-blue   { background: rgba(99,179,237,.15);  color: var(--accent);   }
+    .chip-purple { background: rgba(159,122,234,.15); color: var(--accent-2); }
+    .chip-red    { background: rgba(252,129,129,.15); color: var(--accent-err); }
+    .chip-amber  { background: rgba(246,173,85,.15);  color: var(--accent-warn); }
+
+    /* ─── Chat ────────────────────────────────────────────── */
+    #chat-messages {
+      min-height: 300px;
+      max-height: 460px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-bottom: 16px;
+      padding-right: 4px;
+    }
+    .msg {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      animation: fadeUp .2s ease;
+    }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+    .msg-avatar {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; flex-shrink: 0;
+    }
+    .msg-user .msg-avatar { background: linear-gradient(135deg,var(--accent),var(--accent-2)); color:#fff; }
+    .msg-bot  .msg-avatar { background: var(--surface-3); }
+
+    .msg-bubble {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 13px;
+      max-width: 80%;
+      line-height: 1.7;
+    }
+    .msg-user .msg-bubble { background: rgba(99,179,237,.1); border-color: rgba(99,179,237,.2); }
+
+    .msg-meta { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+
+    .chat-row { display: flex; gap: 10px; align-items: flex-end; }
+    #prompt-text { flex: 1; resize: none; min-height: 44px; max-height: 120px; padding: 10px 14px; border-radius: var(--radius); }
+    #send-btn { flex-shrink: 0; }
+
+    .typing-indicator .dot-wave { display: flex; gap: 4px; padding: 4px 2px; }
+    .typing-indicator .dot-wave span {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--text-muted);
+      animation: wave 1.4s infinite;
+    }
+    .typing-indicator .dot-wave span:nth-child(2){ animation-delay: .2s; }
+    .typing-indicator .dot-wave span:nth-child(3){ animation-delay: .4s; }
+    @keyframes wave { 0%,60%,100%{transform:none;opacity:.4;} 30%{transform:translateY(-6px);opacity:1;} }
+
+    /* ─── Context messages ────────────────────────────────── */
+    .ctx-msg {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      animation: fadeUp .15s ease;
+    }
+    .ctx-msg:last-child { border-bottom: none; }
+    .ctx-role {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing:.05em;
+      min-width: 64px; padding-top: 2px;
+    }
+    .ctx-user { color: var(--accent); }
+    .ctx-assistant { color: var(--accent-2); }
+    .ctx-content { font-size: 13px; color: var(--text); line-height: 1.6; }
+
+    /* ─── Usage table ─────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th {
+      text-align: left; padding: 8px 14px;
+      font-size: 11px; font-weight: 600; letter-spacing:.05em; text-transform:uppercase;
+      color: var(--text-muted); border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.04);
+      font-family: var(--mono); font-size: 12px;
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.025); }
+
+    /* ─── Redis inspector ─────────────────────────────────── */
+    .redis-toolbar {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 16px; flex-wrap: wrap;
+    }
+    #redis-filter {
+      flex: 1; min-width: 200px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 8px 12px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    #redis-filter:focus { border-color: var(--accent); }
+
+    .redis-stats {
+      display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .redis-stat {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 16px;
+      min-width: 110px;
+    }
+    .redis-stat .num { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+    .redis-stat .lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing:.05em; }
+
+    .key-type-badge {
+      display: inline-flex; align-items: center; padding: 1px 7px;
+      border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .type-string { background:rgba(99,179,237,.15); color:var(--accent); }
+    .type-hash   { background:rgba(246,173,85,.15);  color:var(--accent-warn); }
+    .type-list   { background:rgba(104,211,145,.15); color:var(--accent-3); }
+    .type-zset   { background:rgba(159,122,234,.15); color:var(--accent-2); }
+    .type-set    { background:rgba(252,129,129,.15); color:var(--accent-err); }
+
+    .ttl-badge {
+      font-size: 11px; font-family: var(--mono);
+      color: var(--text-muted);
+    }
+    .ttl-soon { color: var(--accent-warn); }
+    .ttl-none { color: var(--text-dim); }
+
+    .value-preview {
+      font-family: var(--mono); font-size: 11px;
+      color: var(--text-muted);
+      max-width: 360px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      cursor: pointer;
+    }
+    .value-preview:hover { color: var(--text); white-space: normal; word-break: break-all; }
+
+    /* ─── Stat pills ──────────────────────────────────────── */
+    .stats-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+    .stat-pill {
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px 20px; display: flex; flex-direction: column; gap: 2px;
+    }
+    .stat-pill .n { font-size: 24px; font-weight: 700; font-family: var(--mono); }
+    .stat-pill .l { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing:.05em; }
+
+    /* ─── Spinner ─────────────────────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─── Toast ───────────────────────────────────────────── */
+    #toast {
+      position: fixed; bottom: 24px; right: 24px;
+      padding: 12px 20px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 13px;
+      box-shadow: var(--shadow);
+      opacity: 0; pointer-events: none;
+      transform: translateY(8px);
+      transition: opacity .25s, transform .25s;
+      z-index: 9999;
+    }
+    #toast.show { opacity: 1; pointer-events: auto; transform: none; }
+    #toast.success { border-color: rgba(104,211,145,.4); color: var(--accent-3); }
+    #toast.error   { border-color: rgba(252,129,129,.4); color: var(--accent-err); }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     LOGIN SCREEN
+═══════════════════════════════════════════════════════════════════════════ -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="dot">⚡</div>
+      <div>
+        <h1>Route Mobile</h1>
+        <span>Developer Portal</span>
+      </div>
+    </div>
+
+    <form id="login-form" onsubmit="handleLogin(event)">
+      <div class="field">
+        <label for="email-input">Email</label>
+        <input id="email-input" type="email" value="admin@route.com" autocomplete="username" required />
+      </div>
+      <div class="field">
+        <label for="password-input">Password</label>
+        <input id="password-input" type="password" value="adminpassword" autocomplete="current-password" required />
+      </div>
+      <button id="login-btn" class="btn btn-primary" type="submit">
+        <span id="login-btn-text">Sign In</span>
+      </button>
+      <div id="login-error"></div>
+    </form>
+
+    <p style="margin-top:18px;text-align:center;font-size:12px;color:var(--text-dim)">
+      Login as <strong style="color:var(--accent)">admin@route.com</strong> to unlock Redis Inspector
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     MAIN APP  (hidden until login)
+═══════════════════════════════════════════════════════════════════════════ -->
+<div id="app" class="hidden">
+
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="sidebar-logo">
+      <div class="dot"></div>
+      <span>Route Mobile</span>
+    </div>
+
+    <div class="nav-section">General</div>
+    <div class="nav-item active" onclick="showPage('dashboard')" id="nav-dashboard">
+      <span class="icon">🏠</span> Dashboard
+    </div>
+    <div class="nav-item" onclick="showPage('chat')" id="nav-chat">
+      <span class="icon">💬</span> Chat
+    </div>
+    <div class="nav-item" onclick="showPage('context')" id="nav-context">
+      <span class="icon">🧠</span> Context
+    </div>
+    <div class="nav-item" onclick="showPage('usage')" id="nav-usage">
+      <span class="icon">📊</span> Usage
+    </div>
+
+    <!-- Admin-only section — shown/hidden by JS -->
+    <div class="nav-section hidden" id="admin-section">Admin</div>
+    <div class="nav-item hidden" onclick="showPage('redis')" id="nav-redis">
+      <span class="icon">🔴</span> Redis Inspector
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="user-badge">
+        <div class="user-avatar" id="user-avatar">?</div>
+        <div class="user-info">
+          <div class="user-email" id="user-email-display">—</div>
+          <div class="user-role" id="user-role-display">—</div>
+        </div>
+      </div>
+      <div class="nav-item" onclick="handleLogout()" style="color:var(--accent-err)">
+        <span class="icon">🚪</span> Logout
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main content area -->
+  <main id="main">
+
+    <!-- ── Dashboard ──────────────────────────────────────── -->
+    <div class="page active" id="page-dashboard">
+      <div class="page-header">
+        <h2>Dashboard</h2>
+        <p>Your live Redis session data — pulled from <code class="mono">GET /api/v1/me/session</code></p>
+      </div>
+
+      <div class="card" id="session-card">
+        <div class="card-title">
+          <span class="dot-indicator"></span>
+          Active Session
+        </div>
+        <div class="kv-grid" id="session-grid">
+          <div class="kv-label">Loading…</div><div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Cache Statistics</div>
+        <div class="stats-row" id="cache-stats-row">
+          <div class="stat-pill"><div class="n" id="stat-hits">—</div><div class="l">Cache Hits</div></div>
+          <div class="stat-pill"><div class="n" id="stat-misses">—</div><div class="l">Cache Misses</div></div>
+          <div class="stat-pill"><div class="n" id="stat-ratio">—</div><div class="l">Hit Ratio</div></div>
+        </div>
+        <div id="cache-note" class="muted" style="font-size:12px">
+          Stats update every time you send a chat message.
+          <a onclick="showPage('redis')" style="color:var(--accent);cursor:pointer">View all keys →</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Chat ───────────────────────────────────────────── -->
+    <div class="page" id="page-chat">
+      <div class="page-header">
+        <h2>Chat</h2>
+        <p>Redis cache in action — second identical prompt shows <span class="chip chip-amber">cached</span></p>
+      </div>
+      <div class="card">
+        <div id="chat-messages"></div>
+        <div class="chat-row">
+          <textarea id="prompt-text" rows="1" placeholder="Ask anything… try the same question twice"></textarea>
+          <button class="btn btn-primary btn-sm" id="send-btn" onclick="sendChat()">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Context ────────────────────────────────────────── -->
+    <div class="page" id="page-context">
+      <div class="page-header">
+        <h2>Conversation Context</h2>
+        <p>Live Redis List — <code class="mono">context:{user_id}</code>  (last 20 messages, LPUSH/LRANGE)</p>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          <span class="dot-indicator"></span>
+          Context History
+          <button class="btn btn-ghost btn-sm" onclick="loadContext()" style="margin-left:auto">Refresh</button>
+          <button class="btn btn-danger btn-sm" onclick="clearContext()">Clear</button>
+        </div>
+        <div id="context-list"><p class="muted" style="padding:8px 0">No messages yet. Start chatting!</p></div>
+      </div>
+    </div>
+
+    <!-- ── Usage ──────────────────────────────────────────── -->
+    <div class="page" id="page-usage">
+      <div class="page-header">
+        <h2>Usage</h2>
+        <p>Daily token & request usage from your SQLite audit log</p>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table id="usage-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Requests</th>
+                <th>Input Tokens</th>
+                <th>Output Tokens</th>
+                <th>Cost</th>
+              </tr>
+            </thead>
+            <tbody id="usage-body">
+              <tr><td colspan="5" class="muted" style="text-align:center;padding:24px">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Redis Inspector (admin only) ─────────────────────── -->
+    <div class="page" id="page-redis">
+      <div class="page-header">
+        <h2>🔴 Redis Inspector</h2>
+        <p>Every live key in Redis — type, TTL, and value preview. Admin-only via RBAC.</p>
+      </div>
+
+      <div class="redis-stats" id="redis-meta-stats">
+        <div class="redis-stat"><div class="num" id="rm-total">—</div><div class="lbl">Total Keys</div></div>
+        <div class="redis-stat"><div class="num" id="rm-sessions">—</div><div class="lbl">Sessions</div></div>
+        <div class="redis-stat"><div class="num" id="rm-cache">—</div><div class="lbl">Cache Keys</div></div>
+        <div class="redis-stat"><div class="num" id="rm-blacklist">—</div><div class="lbl">Blacklisted</div></div>
+        <div class="redis-stat"><div class="num" id="rm-context">—</div><div class="lbl">Context</div></div>
+        <div class="redis-stat"><div class="num" id="rm-quota">—</div><div class="lbl">Quotas</div></div>
+      </div>
+
+      <div class="redis-toolbar">
+        <input id="redis-filter" type="text" placeholder="Filter keys…" oninput="filterRedisTable()" />
+        <button class="btn btn-ghost btn-sm" onclick="loadRedisInspector()">🔄 Refresh</button>
+        <button class="btn btn-danger btn-sm" onclick="flushRedis()">🗑 Flush All</button>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="table-wrap">
+          <table id="redis-table">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Type</th>
+                <th>TTL (s)</th>
+                <th>Value Preview</th>
+              </tr>
+            </thead>
+            <tbody id="redis-body">
+              <tr><td colspan="4" class="muted" style="text-align:center;padding:24px">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     JAVASCRIPT
+═══════════════════════════════════════════════════════════════════════════ -->
+<script>
+/* ── State ────────────────────────────────────────────────────── */
+const API = '/api/v1';
+let _token = null;
+let _role  = null;
+let _userId = null;
+
+/* ── Helpers ──────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+
+function toast(msg, type = 'success') {
+  const el = $('toast');
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.className = '', 3000);
+}
+
+async function apiFetch(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (_token) headers['Authorization'] = `Bearer ${_token}`;
+  const res = await fetch(API + path, { ...opts, headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+/* ── Login ────────────────────────────────────────────────────── */
+async function handleLogin(e) {
+  e.preventDefault();
+  const btn    = $('login-btn');
+  const errEl  = $('login-error');
+  const email  = $('email-input').value.trim();
+  const pass   = $('password-input').value;
+
+  btn.disabled = true;
+  $('login-btn-text').innerHTML = '<span class="spinner"></span>';
+  errEl.textContent = '';
+
+  try {
+    const fd = new FormData();
+    fd.append('username', email);
+    fd.append('password', pass);
+
+    const res = await fetch(`${API}/auth/login`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'Invalid credentials');
+    }
+    const data = await res.json();
+    _token = data.access_token;
+
+    // Fetch user info to get role
+    const me = await apiFetch('/usage/me');
+    _role   = me.role;
+    _userId = me.id;
+
+    initApp(me);
+  } catch (err) {
+    errEl.textContent = '⚠ ' + err.message;
+    $('login-btn-text').textContent = 'Sign In';
+    btn.disabled = false;
+  }
+}
+
+function initApp(me) {
+  // Hide login, show app
+  $('login-screen').classList.add('hidden');
+  $('app').classList.remove('hidden');
+
+  // User badge
+  $('user-email-display').textContent = me.email;
+  $('user-avatar').textContent = me.email[0].toUpperCase();
+  const roleEl = $('user-role-display');
+  roleEl.textContent = me.role;
+  roleEl.className = `user-role role-${me.role}`;
+
+  // Show admin nav if role is admin
+  if (me.role === 'admin') {
+    $('admin-section').classList.remove('hidden');
+    $('nav-redis').classList.remove('hidden');
+  }
+
+  // Load default page data
+  loadDashboard();
+  showPage('dashboard');
+}
+
+/* ── Logout ───────────────────────────────────────────────────── */
+async function handleLogout() {
+  try {
+    await apiFetch('/auth/logout', { method: 'POST' });
+    toast('Logged out — JWT blacklisted in Redis', 'success');
+  } catch (_) {}
+  _token = null; _role = null; _userId = null;
+  $('app').classList.add('hidden');
+  $('login-screen').classList.remove('hidden');
+  $('login-error').textContent = '';
+  $('login-btn-text').textContent = 'Sign In';
+  $('login-btn').disabled = false;
+}
+
+/* ── Navigation ───────────────────────────────────────────────── */
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  $(`page-${name}`).classList.add('active');
+  $(`nav-${name}`) && $(`nav-${name}`).classList.add('active');
+
+  // Lazy load data per page
+  if (name === 'dashboard') loadDashboard();
+  if (name === 'context')   loadContext();
+  if (name === 'usage')     loadUsage();
+  if (name === 'redis')     loadRedisInspector();
+}
+
+/* ── Dashboard ────────────────────────────────────────────────── */
+async function loadDashboard() {
+  try {
+    const session = await apiFetch('/me/session');
+    const grid    = $('session-grid');
+    const labels  = {
+      user_id: 'User ID', email: 'Email', role: 'Role',
+      ip: 'IP Address', user_agent: 'User Agent',
+      login_time: 'Login Time', expires: 'Expires'
+    };
+    const toDate = v => {
+      const n = Number(v);
+      return isNaN(n) || n < 1e9 ? v : new Date(n * 1000).toLocaleString();
+    };
+    grid.innerHTML = Object.entries(session).map(([k, v]) =>
+      `<div class="kv-label">${labels[k] || k}</div>
+       <div class="kv-value">${k.includes('time') || k === 'expires' ? toDate(v) : v}</div>`
+    ).join('');
+  } catch (e) {
+    $('session-grid').innerHTML = `<div class="kv-label" style="color:var(--accent-err)">${e.message}</div><div></div>`;
+  }
+
+  // Cache stats (admin-only endpoint — skip gracefully for regular users)
+  if (_role === 'admin') {
+    try {
+      const stats = await apiFetch('/admin/cache/stats');
+      $('stat-hits').textContent   = stats.hits;
+      $('stat-misses').textContent = stats.misses;
+      $('stat-ratio').textContent  = stats.hit_ratio;
+    } catch (_) {}
+  } else {
+    $('cache-stats-row').innerHTML = '<p class="muted" style="font-size:12px">Cache statistics visible to admins only.</p>';
+    $('cache-note').classList.add('hidden');
+  }
+}
+
+/* ── Chat ─────────────────────────────────────────────────────── */
+async function sendChat() {
+  const textarea = $('prompt-text');
+  const prompt   = textarea.value.trim();
+  if (!prompt) return;
+
+  textarea.value = '';
+  textarea.style.height = '';
+
+  appendMsg('user', prompt);
+  const typingEl = appendTyping();
+
+  const sendBtn = $('send-btn');
+  sendBtn.disabled = true;
+
+  try {
+    const data = await apiFetch('/chat', {
+      method: 'POST',
+      body: JSON.stringify({ prompt })
+    });
+    typingEl.remove();
+    appendMsg('assistant', data.response, data.cached, data.model);
+    // Refresh dashboard cache stats silently
+    loadDashboard();
+  } catch (err) {
+    typingEl.remove();
+    appendMsg('assistant', '⚠ Error: ' + err.message);
+    toast(err.message, 'error');
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+function appendMsg(role, content, cached = false, model = '') {
+  const msgs = $('chat-messages');
+  const div  = document.createElement('div');
+  div.className = `msg msg-${role === 'user' ? 'user' : 'bot'}`;
+  const cachedBadge = cached ? `<span class="chip chip-amber">⚡ cached</span>` : '';
+  const modelBadge  = model  ? `<span class="chip chip-blue" style="margin-left:4px">${model}</span>` : '';
+  div.innerHTML = `
+    <div class="msg-avatar">${role === 'user' ? 'U' : '🤖'}</div>
+    <div>
+      <div class="msg-bubble">${escHtml(content)}</div>
+      <div class="msg-meta">${cachedBadge}${modelBadge}</div>
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+function appendTyping() {
+  const msgs = $('chat-messages');
+  const div  = document.createElement('div');
+  div.className = 'msg msg-bot typing-indicator';
+  div.innerHTML = `
+    <div class="msg-avatar">🤖</div>
+    <div class="msg-bubble">
+      <div class="dot-wave"><span></span><span></span><span></span></div>
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+}
+
+// Auto-resize textarea
+$('prompt-text').addEventListener('input', function() {
+  this.style.height = '';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+$('prompt-text').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+
+/* ── Context ──────────────────────────────────────────────────── */
+async function loadContext() {
+  const el = $('context-list');
+  el.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const data = await apiFetch('/me/context');
+    if (!data.messages || data.messages.length === 0) {
+      el.innerHTML = '<p class="muted" style="padding:8px 0">No messages yet. Start chatting!</p>';
+      return;
+    }
+    el.innerHTML = data.messages.map(m => `
+      <div class="ctx-msg">
+        <div class="ctx-role ctx-${m.role}">${m.role}</div>
+        <div class="ctx-content">${escHtml(m.content)}</div>
+      </div>`).join('');
+  } catch (e) { el.innerHTML = `<p style="color:var(--accent-err)">${e.message}</p>`; }
+}
+
+async function clearContext() {
+  try {
+    await apiFetch('/me/context', { method: 'DELETE' });
+    toast('Context cleared from Redis', 'success');
+    loadContext();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ── Usage ────────────────────────────────────────────────────── */
+async function loadUsage() {
+  const tbody = $('usage-body');
+  tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">Loading…</td></tr>';
+  try {
+    const rows = await apiFetch('/usage/usage');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">No usage records yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.date}</td>
+        <td>${r.request_count}</td>
+        <td>${r.input_tokens}</td>
+        <td>${r.output_tokens}</td>
+        <td>$${(r.cost || 0).toFixed(4)}</td>
+      </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--accent-err);padding:16px">${e.message}</td></tr>`;
+  }
+}
+
+/* ── Redis Inspector ──────────────────────────────────────────── */
+let _redisData = [];
+
+async function loadRedisInspector() {
+  const tbody = $('redis-body');
+  tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:24px"><span class="spinner"></span></td></tr>';
+
+  try {
+    _redisData = await apiFetch('/admin/redis/inspect');
+    renderRedisTable(_redisData);
+    updateRedisMeta(_redisData);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--accent-err);padding:16px">${e.message}</td></tr>`;
+  }
+}
+
+function renderRedisTable(data) {
+  const tbody = $('redis-body');
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;padding:24px">No keys in Redis.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(r => {
+    const typeClass = `type-${r.type}`;
+    const ttlClass  = r.ttl === -1 ? 'ttl-none' : r.ttl < 60 ? 'ttl-soon' : '';
+    const ttlLabel  = r.ttl === -1 ? '∞' : r.ttl === -2 ? 'gone' : r.ttl;
+    return `
+      <tr>
+        <td class="mono" style="font-size:11px">${escHtml(r.key)}</td>
+        <td><span class="key-type-badge ${typeClass}">${r.type}</span></td>
+        <td><span class="ttl-badge ${ttlClass}">${ttlLabel}</span></td>
+        <td><div class="value-preview" title="${escHtml(r.value_preview)}">${escHtml(r.value_preview)}</div></td>
+      </tr>`;
+  }).join('');
+}
+
+function updateRedisMeta(data) {
+  const count = prefix => data.filter(r => r.key.startsWith(prefix + ':')).length;
+  $('rm-total').textContent    = data.length;
+  $('rm-sessions').textContent = count('session');
+  $('rm-cache').textContent    = count('cache');
+  $('rm-blacklist').textContent= count('blacklist');
+  $('rm-context').textContent  = count('context');
+  $('rm-quota').textContent    = count('quota');
+}
+
+function filterRedisTable() {
+  const q = $('redis-filter').value.toLowerCase();
+  const filtered = _redisData.filter(r =>
+    r.key.toLowerCase().includes(q) ||
+    r.type.toLowerCase().includes(q) ||
+    r.value_preview.toLowerCase().includes(q)
+  );
+  renderRedisTable(filtered);
+}
+
+async function flushRedis() {
+  if (!confirm('⚠ This will DELETE all Redis keys. Continue?')) return;
+  try {
+    const res = await apiFetch('/admin/redis/flush', { method: 'DELETE' });
+    toast(`Flushed ${res.keys_deleted} keys from Redis`, 'success');
+    loadRedisInspector();
+  } catch (e) { toast(e.message, 'error'); }
+}
+</script>
+</body>
+</html>

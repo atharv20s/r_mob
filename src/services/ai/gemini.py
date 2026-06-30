@@ -14,7 +14,7 @@ class GeminiService(BaseAIService):
             except Exception as e:
                 print(f"Failed to initialize Gemini client: {e}")
 
-    async def generate_text(self, prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
+    async def generate_text(self, prompt: str, model: Optional[str] = None, messages: Optional[list] = None) -> Dict[str, Any]:
         model_name = model or settings.DEFAULT_MODEL
         if not self.client:
             return {
@@ -26,10 +26,18 @@ class GeminiService(BaseAIService):
             }
 
         try:
+            if messages:
+                contents = []
+                for m in messages:
+                    role = "user" if m["role"] == "user" else "model"
+                    contents.append({"role": role, "parts": [{"text": m["content"]}]})
+            else:
+                contents = prompt
+
             # google-genai package uses aio namespace for async calls
             response = await self.client.aio.models.generate_content(
                 model=model_name,
-                contents=prompt,
+                contents=contents,
             )
             return {
                 "success": True,

@@ -9,7 +9,7 @@ class MistralService(BaseAIService):
         self.api_key = settings.MISTRAL_API_KEY
         self.api_url = "https://api.mistral.ai/v1/chat/completions"
 
-    async def generate_text(self, prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
+    async def generate_text(self, prompt: str, model: Optional[str] = None, messages: Optional[list] = None) -> Dict[str, Any]:
         if not self.api_key or self.api_key == "your_mistral_api_key":
             return {"success": False, "error": "Mistral API key is not configured"}
 
@@ -19,9 +19,10 @@ class MistralService(BaseAIService):
         }
         
         model_name = model or "mistral-large-latest"
+        msgs = messages if messages else [{"role": "user", "content": prompt}]
         payload = {
             "model": model_name,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": msgs,
             "temperature": 0.7
         }
 

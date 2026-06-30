@@ -11,7 +11,7 @@ class OpenAIService(BaseAIService):
         if has_credentials:
             self.client = AsyncOpenAI(api_key=self.api_key)
 
-    async def generate_text(self, prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
+    async def generate_text(self, prompt: str, model: Optional[str] = None, messages: Optional[list] = None) -> Dict[str, Any]:
         if not self.client:
             model_name = model or "gpt-4o-mini"
             return {
@@ -24,9 +24,10 @@ class OpenAIService(BaseAIService):
 
         try:
             model_name = model or "gpt-4o-mini"
+            msgs = messages if messages else [{"role": "user", "content": prompt}]
             response = await self.client.chat.completions.create(
                 model=model_name,
-                messages=[{"role": "user", "content": prompt}]
+                messages=msgs
             )
             return {
                 "success": True,

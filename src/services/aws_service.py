@@ -1,14 +1,26 @@
-import boto3
-from botocore.exceptions import ClientError
 from typing import Dict, Any, Optional
 from src.core.config import settings
+
+# boto3 is an optional dependency — import lazily so the server starts even
+# if it is not installed. All routes degrade to mock mode in that case.
+try:
+    import boto3
+    from botocore.exceptions import ClientError
+    _BOTO3_AVAILABLE = True
+except ImportError:
+    boto3 = None  # type: ignore[assignment]
+    ClientError = Exception  # type: ignore[assignment,misc]
+    _BOTO3_AVAILABLE = False
+    print("[WARN] boto3 not installed — AWS S3 running in mock mode.")
+
 
 class AWSService:
     def __init__(self):
         self.s3_client = None
-        # Only initialize if credentials are provided and not placeholders
+        # Only initialize if boto3 is present AND credentials are real
         has_credentials = (
-            settings.AWS_ACCESS_KEY_ID and 
+            _BOTO3_AVAILABLE and
+            settings.AWS_ACCESS_KEY_ID and
             settings.AWS_ACCESS_KEY_ID != "placeholder_key" and
             settings.AWS_SECRET_ACCESS_KEY and
             settings.AWS_SECRET_ACCESS_KEY != "placeholder_secret"
@@ -19,12 +31,12 @@ class AWSService:
                     "s3",
                     aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
                     aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                    region_name=settings.AWS_REGION
+                    region_name=settings.AWS_REGION,
                 )
-            except Exception as e:
-                print(f"Failed to initialize AWS S3 client: {e}")
+            except Exception as exc:
+                print(f"[WARN] Failed to initialize AWS S3 client: {exc}")
         else:
-            print("AWS credentials not fully configured. S3 client runs in mock mode.")
+            print("[INFO] AWS S3 client running in mock mode (no real credentials).")
 
     def upload_file(self, file_content: bytes, object_name: str, bucket_name: Optional[str] = None) -> Dict[str, Any]:
         """Upload a file to an S3 bucket."""

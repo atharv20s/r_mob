@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from src.api.v1.endpoints import aws, ai, auth, chat, usage, health, admin, session, test
+from src.api.v1.endpoints import aws, ai, auth, chat, usage, health, admin, session, test, context
 
 api_router = APIRouter()
 
@@ -11,4 +11,6 @@ api_router.include_router(ai.router, prefix="/ai", tags=["AI Services"])
 api_router.include_router(health.router, prefix="/health", tags=["Health"])
 api_router.include_router(admin.router, prefix="/admin", tags=["Admin"])
 api_router.include_router(session.router, prefix="/me", tags=["Session"])
+api_router.include_router(context.router, prefix="/me", tags=["Context"])
 api_router.include_router(test.router, prefix="/test", tags=["Test"])
+

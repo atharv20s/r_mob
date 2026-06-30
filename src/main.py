@@ -1,7 +1,10 @@
 import uuid
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from src.core.config import settings
 from src.api.v1.router import api_router
 from src.core.security import get_password_hash
@@ -101,8 +104,18 @@ finally:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup / shutdown lifecycle. Validates Redis on boot."""
+    """Startup / shutdown lifecycle.
+
+    On startup:
+        1. Validates Redis connection.
+        2. Starts the background usage flusher (Redis → SQL every 60 s).
+
+    On shutdown:
+        1. Cancels the flusher task (which triggers one final flush).
+    """
+    import asyncio
     from src.services.redis_service import redis_service
+    from src.services.usage_flusher import usage_flush_loop
 
     if not redis_service.ping():
         if settings.REDIS_REQUIRED:
@@ -113,7 +126,20 @@ async def lifespan(app: FastAPI):
         print("[WARN] Redis unavailable at startup — running in degraded mode.")
     else:
         print("[OK] Redis health check passed at startup.")
+
+    # Start the background usage flusher
+    flusher_task = asyncio.create_task(usage_flush_loop())
+    print("[OK] Background usage flusher started.")
+
     yield
+
+    # Graceful shutdown — cancel flusher (it will do a final flush internally)
+    flusher_task.cancel()
+    try:
+        await flusher_task
+    except asyncio.CancelledError:
+        pass
+    print("[OK] Usage flusher stopped cleanly.")
 
 
 app = FastAPI(
@@ -143,10 +169,16 @@ async def add_correlation_id(request: Request, call_next):
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+# Mount static frontend portal
+static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+if os.path.isdir(static_dir):
+    app.mount("/portal", StaticFiles(directory=static_dir, html=True), name="portal")
+
 @app.get("/", tags=["Health"])
 def root():
     return {
         "message": f"Welcome to {settings.PROJECT_NAME}!",
         "status": "healthy",
-        "docs": "/docs"
+        "docs": "/docs",
+        "portal": "/portal"
     }

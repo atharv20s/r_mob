@@ -21,7 +21,7 @@ except Exception:
 
 from fastapi.testclient import TestClient
 from src.db.session import SessionLocal
-from src.db import models
+from src.db import models, models_billing
 
 # -- helpers --
 DEMO_EMAIL = "ratelimit_test_user@route.com"
@@ -39,7 +39,8 @@ def cleanup(db):
 def flush_rate_keys():
     """Clear any lingering rate_limit keys so the test starts clean."""
     import redis
-    r = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True)
+    from src.core.config import settings
+    r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
     for key in r.keys("rate_limit:*"):
         r.delete(key)
 

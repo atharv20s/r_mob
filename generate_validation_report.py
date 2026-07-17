@@ -28,7 +28,7 @@ except Exception:
 import redis as redis_lib
 from fastapi.testclient import TestClient
 from src.db.session import SessionLocal
-from src.db import models
+from src.db import models, models_billing
 
 DEMO_EMAIL = "validation_report@route.com"
 DEMO_PASS  = "ValidationReport!2026"
@@ -46,7 +46,8 @@ def cleanup(db):
         db.commit()
 
 def main():
-    r = redis_lib.Redis(host="127.0.0.1", port=6379, decode_responses=True)
+    from src.core.config import settings
+    r = redis_lib.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 
     # Selective cleanup
     for pattern in ["rate_limit:*", "cache:*", "stats:*", "quota:*"]:
@@ -66,7 +67,7 @@ def main():
     md.append("# Redis Validation Report")
     md.append("")
     md.append(f"**Generated:** {datetime.datetime.now().isoformat()}")
-    md.append(f"**Redis URL:** localhost:6379")
+    md.append(f"**Redis URL:** {settings.REDIS_URL}")
     md.append("")
 
     # -- 1. Connection --

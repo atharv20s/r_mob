@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  # Enable hot-reloading volume mounts and include --reload flag for local development
+  gateway:
+    command:
+      - uvicorn
+      - src.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+    volumes:
+      - .:/app
+
+  # Publish Redis port 6337 to host for local debugging and tests
+  redis-cluster:
+    ports:
+      - "6337:6337"

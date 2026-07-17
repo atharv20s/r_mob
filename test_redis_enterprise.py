@@ -34,7 +34,7 @@ except Exception:
 import redis as redis_lib
 from fastapi.testclient import TestClient
 from src.db.session import SessionLocal
-from src.db import models
+from src.db import models, models_billing
 
 # ── Unique per run ──────────────────────────────────────────────────────
 RUN_ID     = uuid.uuid4().hex[:8]
@@ -69,7 +69,8 @@ def flush_redis():
     Selective flush — delete ALL test-related key families so every
     run starts from a clean slate.  Uses SCAN (not KEYS) for safety.
     """
-    r = redis_lib.Redis(host="127.0.0.1", port=6379, decode_responses=True)
+    from src.core.config import settings
+    r = redis_lib.Redis.from_url(settings.REDIS_URL, decode_responses=True)
     patterns = [
         "rate_limit:*",
         "rate_limit_slide:*",
@@ -108,7 +109,8 @@ def main():
 
     from src.main import app
     client = TestClient(app)
-    r = redis_lib.Redis(host="127.0.0.1", port=6379, decode_responses=True)
+    from src.core.config import settings
+    r = redis_lib.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 
     # ── 1. Redis Health ─────────────────────────────────────────────────
     print("\n-- Test 1: Redis Health --")

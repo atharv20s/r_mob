@@ -1,23 +1,66 @@
 version: '3.8'
 
+# ─── VPC-Isolated Network ───────────────────────────────────────────────────
+# Only gateway (:8000) and Grafana (:3000) are exposed to the host.
+# Redis, PostgreSQL, Ollama, and Prometheus are HIDDEN inside vpc_internal.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  vpc_internal:
+    driver: bridge
+
 services:
-  web:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # The Public Entrypoint — FastAPI Gateway
+  # ═══════════════════════════════════════════════════════════════════════════
+  gateway:
     build: .
     ports:
-      - "8000:8000"
+      - "800:8000"
     environment:
       - PROJECT_NAME=Route Mobile API
       - DATABASE_URL=postgresql+psycopg2://postgres:postgres_password@db:5432/ai_gateway
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis-cluster:6337
+      - OLLAMA_BASE_URL=http://ollama-1:11434
+      - OLLAMA_NODES=http://ollama-1:11434,http://ollama-2:11434,http://ollama-3:11434
+      - VLLM_BASE_URL=http://vllm-cluster:8000
+      - VLLM_NODES=http://vllm-cluster:8000
+      - DEFAULT_PROVIDER=ollama
+      - DEFAULT_MODEL=llama3.1:8b
+      - FALLBACK_PROVIDERS=vllm,mistral,openai,gemini
+      - PROMPT_SAFETY_ENABLED=true
+      - METRICS_ENABLED=true
+      - LOG_FORMAT=json
+      - HEALTH_CHECK_INTERVAL=30
+      - GATEWAY_RPS_LIMIT=10000
+      - IP_RPS_LIMIT=100
+      - GLOBAL_CACHE_TTL=3600
+      - CONVERSATION_CACHE_TTL=600
       - JWT_SECRET=${JWT_SECRET}
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
-      - DEFAULT_MODEL=gemini-1.5-flash
+    networks:
+      - vpc_internal
     depends_on:
-      - db
-      - redis
-    volumes:
-      - .:/app
+      db:
+        condition: service_healthy
+      redis-cluster:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    command:
+      - uvicorn
+      - src.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    # Note: Volumes are omitted in production for immutable builds, overridden in development
+    restart: unless-stopped
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PostgreSQL — Internal Only (persistent data)
+  # Stores: Users, Orgs, API Keys, Plans, Audit Logs, Usage, Billing
+  # ═══════════════════════════════════════════════════════════════════════════
   db:
     image: postgres:16-alpine
     restart: always
@@ -25,19 +68,177 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres_password
       POSTGRES_DB: ai_gateway
-    ports:
-      - "5432:5432"
+    networks:
+      - vpc_internal
+    # NOTE: Port 5432 is NOT exposed to host — only gateway can reach it
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_gateway"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  redis:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Redis — Internal Only (sessions, rate limits, cache, conversations,
+  #          health registry, audit buffer, gateway stats)
+  # Port 6337 is intentionally non-standard and NOT exposed to host
+  # ═══════════════════════════════════════════════════════════════════════════
+  redis-cluster:
     image: redis:7-alpine
     restart: always
-    ports:
-      - "6380:6379"
+    command: redis-server --port 6337 --protected-mode no --appendonly yes
+    # Note: Redis ports are not exposed in production. Overridden in development.
+    networks:
+      - vpc_internal
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6337", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Ollama Node 1 — Hidden AI Inference Compute Node
+  # NEVER exposed to the internet. Only FastAPI can reach port 11434.
+  # ═══════════════════════════════════════════════════════════════════════════
+  ollama-1:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    networks:
+      - vpc_internal
+    # NOTE: Port 11434 is NOT exposed to host — completely hidden in VPC
+    volumes:
+      - ollama_data_1:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # ── GPU Passthrough (uncomment if NVIDIA GPU available) ──────────────
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Ollama Node 2 — Second Inference Node (Cluster Redundancy)
+  # Health check loop auto-detects and routes traffic to healthiest node.
+  # ═══════════════════════════════════════════════════════════════════════════
+  ollama-2:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    networks:
+      - vpc_internal
+    volumes:
+      - ollama_data_2:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # ── GPU Passthrough (uncomment if NVIDIA GPU available) ──────────────
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Ollama Node 3 — Third Inference Node (CPU Fallback)
+  # Can run lighter models (llama3.2) without GPU.
+  # ═══════════════════════════════════════════════════════════════════════════
+  ollama-3:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    networks:
+      - vpc_internal
+    volumes:
+      - ollama_data_3:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # One-shot model puller / initializer
+  # Waits for nodes to be healthy, pulls models in parallel, then exits.
+  # ═══════════════════════════════════════════════════════════════════════════
+  ollama-init:
+    image: curlimages/curl:latest
+    restart: "no"
+    networks:
+      - vpc_internal
+    depends_on:
+      ollama-1:
+        condition: service_healthy
+      ollama-2:
+        condition: service_healthy
+      ollama-3:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        echo "Seeding models to Ollama nodes in parallel..."
+        curl -s -X POST http://ollama-1:11434/api/pull -d '{"name": "gemma2:2b"}' &
+        curl -s -X POST http://ollama-2:11434/api/pull -d '{"name": "gemma2:2b"}' &
+        curl -s -X POST http://ollama-3:11434/api/pull -d '{"name": "tinyllama:latest"}' &
+        wait
+        echo "All models seeded successfully!"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Prometheus — Internal Only (metrics scraping)
+  # Scrapes /metrics from gateway every 15 seconds.
+  # ═══════════════════════════════════════════════════════════════════════════
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    networks:
+      - vpc_internal
+    # NOTE: Port 9090 is NOT exposed to host — Grafana queries internally
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Grafana — User-Facing Monitoring Dashboard
+  # The ONLY monitoring port exposed to the host (:3000).
+  # Dashboards and data sources are auto-provisioned on startup.
+  # ═══════════════════════════════════════════════════════════════════════════
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - vpc_internal
+    depends_on:
+      - prometheus
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
 
 volumes:
   postgres_data:
   redis_data:
+  ollama_data_1:
+  ollama_data_2:
+  ollama_data_3:
+  prometheus_data:
+  grafana_data:

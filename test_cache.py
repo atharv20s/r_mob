@@ -20,7 +20,7 @@ except Exception:
 
 from fastapi.testclient import TestClient
 from src.db.session import SessionLocal
-from src.db import models
+from src.db import models, models_billing
 
 DEMO_EMAIL = "cache_test_user@route.com"
 DEMO_PASS  = "CacheTest!2026"
@@ -38,7 +38,8 @@ def cleanup(db):
 def flush_cache_keys():
     """Clear any lingering cache keys so the test starts clean."""
     import redis
-    r = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True)
+    from src.core.config import settings
+    r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
     for key in r.keys("cache:*"):
         r.delete(key)
     # Also reset stats
@@ -120,7 +121,8 @@ def main():
     # 7. Check Redis keys
     print("\n--- Redis Key Verification ---")
     import redis
-    r = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True)
+    from src.core.config import settings
+    r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
     cache_keys = r.keys("cache:*")
     print(f"  Cache keys in Redis: {len(cache_keys)}")
     for k in cache_keys:

@@ -13,6 +13,7 @@ falls back to SQL and returns a real User ORM object.
 """
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -42,3 +43,9 @@ class UserSession:
     rps: int = 5               # requests per second
     daily_quota: int = 1000
     monthly_quota: int = 30_000
+
+    # --- Multi-tenancy ---
+    organization_id: Optional[int] = None
+
+    # --- API key auth (hash prefix for rate:apikey:{hash} key) ---
+    api_key_hash: Optional[str] = None

@@ -147,6 +147,42 @@ class RedisService:
         self.client.delete(f"session:{user_id}")
         self._log("SESSION   ", "DELETED", f"session:{user_id}")
 
+    # ── API Key Sessions ─────────────────────────────────────────────────
+    # Stored identically to JWT sessions but keyed by API key hash prefix.
+    # session:apikey:{hash_prefix}  →  HASH  (same fields as session:{user_id})
+
+    def create_apikey_session(
+        self, key_hash_prefix: str, data: Dict[str, Any], ttl: int = 1800
+    ) -> None:
+        """Store an API key session in Redis.
+
+        ``key_hash_prefix`` is the first 16 chars of the SHA-256 hash.
+        """
+        if not self._require_client("SESSION"):
+            return
+        key = f"session:apikey:{key_hash_prefix}"
+        serialized = {k: str(v) for k, v in data.items()}
+        self.client.hset(key, mapping=serialized)
+        self.client.expire(key, ttl)
+        self._log("SESSION   ", "APIKEY ", f"session:apikey:{key_hash_prefix}  TTL={ttl}s")
+
+    def get_apikey_session(self, key_hash_prefix: str) -> Optional[Dict[str, Any]]:
+        """Retrieve API key session from Redis."""
+        if not self._require_client("SESSION"):
+            return None
+        data = self.client.hgetall(f"session:apikey:{key_hash_prefix}")
+        if not data:
+            return None
+        for int_field in ("user_id", "rps", "daily_quota", "monthly_quota",
+                          "login_time", "expires"):
+            if int_field in data:
+                try:
+                    data[int_field] = int(data[int_field])
+                except ValueError:
+                    pass
+        self._log("SESSION   ", "APIKEY ", f"Retrieved apikey session: {key_hash_prefix}")
+        return data
+
     # =========================================================================
     # 3. JWT Blacklist  (String: SETEX / EXISTS)
     # =========================================================================
@@ -263,6 +299,97 @@ class RedisService:
         self._log("CONTEXT   ", "CLEAR", f"context:{user_id}")
 
     # =========================================================================
+    # 5b. Conversation Context  (ChatGPT-style multi-thread)
+    #
+    # Unlike context:{user_id} which is a single stream, conversations
+    # allow each user to have multiple independent chat threads:
+    #
+    # conversation:{conversation_id}        → LIST (messages, capped 40, 24h TTL)
+    # conversation:{conversation_id}:meta   → HASH (title, created_at)
+    # user:{user_id}:conversations          → HASH (conversation_id → title)
+    # =========================================================================
+
+    def add_conversation_message(
+        self, conversation_id: str, role: str, content: str
+    ) -> None:
+        """Append a message to a conversation thread (capped at 40)."""
+        if not self._require_client("CONVERSATION"):
+            return
+        key = f"conversation:{conversation_id}"
+        self.client.lpush(key, json.dumps({"role": role, "content": content}))
+        self.client.ltrim(key, 0, 39)
+        self._log("CONVO     ", "ADD ", f"conversation:{conversation_id}  role={role}")
+
+    def get_conversation_history(
+        self, conversation_id: str
+    ) -> List[Dict[str, Any]]:
+        """Return conversation messages in chronological order (oldest → newest)."""
+        if not self._require_client("CONVERSATION"):
+            return []
+        key = f"conversation:{conversation_id}"
+        raw_list = self.client.lrange(key, 0, -1)
+        parsed: List[Dict[str, Any]] = []
+        for item in raw_list:
+            try:
+                parsed.append(json.loads(item))
+            except Exception:
+                pass
+        return parsed[::-1]  # reverse: LPUSH stores newest first
+
+    def set_conversation_ttl(
+        self, conversation_id: str, ttl: int = 86400
+    ) -> None:
+        """Reset the TTL on a conversation (default 24 hours)."""
+        if not self.client:
+            return
+        self.client.expire(f"conversation:{conversation_id}", ttl)
+
+    def clear_conversation(self, conversation_id: str) -> None:
+        """Delete a conversation and its metadata."""
+        if not self._require_client("CONVERSATION"):
+            return
+        self.client.delete(f"conversation:{conversation_id}")
+        self.client.delete(f"conversation:{conversation_id}:meta")
+        self._log("CONVO     ", "CLEAR", f"conversation:{conversation_id}")
+
+    def link_conversation_to_user(
+        self, user_id: int, conversation_id: str, title: str = "New Chat"
+    ) -> None:
+        """Associate a conversation with a user (HSET in user:{id}:conversations)."""
+        if not self._require_client("CONVERSATION"):
+            return
+        self.client.hset(f"user:{user_id}:conversations", conversation_id, title)
+        # Store metadata
+        self.client.hset(f"conversation:{conversation_id}:meta", mapping={
+            "title": title,
+            "user_id": str(user_id),
+            "created_at": str(int(time.time())),
+        })
+        self._log("CONVO     ", "LINK ", f"user:{user_id} -> conversation:{conversation_id}")
+
+    def unlink_conversation_from_user(
+        self, user_id: int, conversation_id: str
+    ) -> None:
+        """Remove a conversation from a user's list."""
+        if not self._require_client("CONVERSATION"):
+            return
+        self.client.hdel(f"user:{user_id}:conversations", conversation_id)
+        self._log("CONVO     ", "UNLINK", f"user:{user_id} ✕ conversation:{conversation_id}")
+
+    def get_user_conversations(self, user_id: int) -> List[tuple]:
+        """Return list of (conversation_id, title) for a user."""
+        if not self._require_client("CONVERSATION"):
+            return []
+        data = self.client.hgetall(f"user:{user_id}:conversations")
+        return list(data.items())
+
+    def user_owns_conversation(self, user_id: int, conversation_id: str) -> bool:
+        """Check if a conversation belongs to the given user."""
+        if not self.client:
+            return False
+        return self.client.hexists(f"user:{user_id}:conversations", conversation_id)
+
+    # =========================================================================
     # 6. Rate Limiter
     #    a) Fixed-window  (String: INCR / EXPIRE)
     #    b) Sliding-window (Sorted Set: ZADD / ZCARD / ZREMRANGEBYSCORE)
@@ -305,6 +432,31 @@ class RedisService:
             return False
 
         # Record this request with a unique member key
+        member = f"{now}:{time.perf_counter()}"
+        self.client.zadd(key, {member: now})
+        self.client.expire(key, window + 5)
+        return True
+
+    def sliding_window_check(
+        self, key: str, limit: int, window: int = 1
+    ) -> bool:
+        """
+        Generic sliding-window rate limiter for any key prefix.
+
+        Used by the 6-tier rate limiting engine:
+            rate:gateway, rate:ip:{ip}, rate:org:{org},
+            rate:user:{uid}, rate:apikey:{hash}, rate:model:{model}
+
+        Returns True if the request is within the allowed limit.
+        """
+        if not self.client:
+            return True
+        now = time.time()
+        self.client.zremrangebyscore(key, 0, now - window)
+        current_count = self.client.zcard(key)
+        if current_count >= limit:
+            self._log("RATE LIMIT", "BLOCK", f"{key}  {current_count}/{limit}")
+            return False
         member = f"{now}:{time.perf_counter()}"
         self.client.zadd(key, {member: now})
         self.client.expire(key, window + 5)
@@ -463,6 +615,273 @@ class RedisService:
         total = hits + misses
         hit_ratio = f"{round(hits / total * 100)}%" if total > 0 else "0%"
         return {"hits": hits, "misses": misses, "hit_ratio": hit_ratio}
+
+    # =========================================================================
+    # 10. Split Cache — Global + Conversation
+    #
+    # Global cache:   cache:global:{provider}:{model}:{sha256}  →  STRING
+    #   Shared across all users.  High hit rate for translations, summaries.
+    #   TTL: 1 hour (configurable via GLOBAL_CACHE_TTL).
+    #
+    # Conversation cache:  cache:conv:{conversation_id}:{sha256}  →  STRING
+    #   Scoped to a single chat thread.  Context-dependent responses.
+    #   TTL: 10 minutes (configurable via CONVERSATION_CACHE_TTL).
+    # =========================================================================
+
+    def cache_global_response(
+        self,
+        cache_key: str,
+        data: Dict[str, Any],
+        provider: str = "default",
+        model: str = "default",
+        expires_in_sec: int = 3600,
+    ) -> None:
+        """Store a response in the global shared cache (high TTL)."""
+        if not self._require_client("CACHE"):
+            return
+        full_key = f"cache:global:{provider}:{model}:{cache_key}"
+        self.client.setex(full_key, expires_in_sec, json.dumps(data))
+        self._log("CACHE     ", "GLOBAL", f"{full_key[:40]}…  TTL={expires_in_sec}s")
+
+    def get_global_cached_response(
+        self,
+        cache_key: str,
+        provider: str = "default",
+        model: str = "default",
+    ) -> Optional[Dict[str, Any]]:
+        """Return a globally cached response or None."""
+        if not self._require_client("CACHE"):
+            return None
+        full_key = f"cache:global:{provider}:{model}:{cache_key}"
+        raw = self.client.get(full_key)
+        if raw:
+            self.incr_cache_hit()
+            self._log("CACHE     ", "G-HIT", f"{full_key[:40]}…")
+            return json.loads(raw)
+        return None
+
+    def cache_conversation_response(
+        self,
+        conversation_id: str,
+        cache_key: str,
+        data: Dict[str, Any],
+        expires_in_sec: int = 600,
+    ) -> None:
+        """Store a response in the conversation-scoped cache."""
+        if not self._require_client("CACHE"):
+            return
+        full_key = f"cache:conv:{conversation_id}:{cache_key}"
+        self.client.setex(full_key, expires_in_sec, json.dumps(data))
+        self._log("CACHE     ", "CONV  ", f"{full_key[:40]}…  TTL={expires_in_sec}s")
+
+    def get_conversation_cached_response(
+        self,
+        conversation_id: str,
+        cache_key: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a conversation-scoped cached response or None."""
+        if not self._require_client("CACHE"):
+            return None
+        full_key = f"cache:conv:{conversation_id}:{cache_key}"
+        raw = self.client.get(full_key)
+        if raw:
+            self.incr_cache_hit()
+            self._log("CACHE     ", "C-HIT", f"{full_key[:40]}…")
+            return json.loads(raw)
+        return None
+
+    # =========================================================================
+    # 10a-2. Extended Cache Tiers (Phase H)
+    #
+    # System prompt cache:  cache:system_prompt:{sha256}  →  STRING (TTL: 24h)
+    # Prompt template cache: cache:template:{name}        →  STRING (TTL: 24h)
+    # Model metadata cache:  cache:model_meta:{model}      →  STRING (TTL: 5m)
+    # =========================================================================
+
+    def cache_system_prompt(self, prompt_hash: str, prompt_text: str, expires_in_sec: int = 86400) -> None:
+        """Store a precompiled system prompt in cache."""
+        if not self._require_client("CACHE"):
+            return
+        key = f"cache:system_prompt:{prompt_hash}"
+        self.client.setex(key, expires_in_sec, prompt_text)
+        self._log("CACHE     ", "SYS_SET", f"{key[:40]}… TTL={expires_in_sec}s")
+
+    def get_cached_system_prompt(self, prompt_hash: str) -> Optional[str]:
+        """Retrieve a cached system prompt."""
+        if not self._require_client("CACHE"):
+            return None
+        key = f"cache:system_prompt:{prompt_hash}"
+        raw = self.client.get(key)
+        if raw:
+            self._log("CACHE     ", "SYS_HIT", f"{key[:40]}…")
+            return raw
+        return None
+
+    def cache_prompt_template(self, name: str, template: str, expires_in_sec: int = 86400) -> None:
+        """Store a prompt template in cache."""
+        if not self._require_client("CACHE"):
+            return
+        key = f"cache:template:{name}"
+        self.client.setex(key, expires_in_sec, template)
+        self._log("CACHE     ", "TMPL_SET", f"{key} TTL={expires_in_sec}s")
+
+    def get_cached_prompt_template(self, name: str) -> Optional[str]:
+        """Retrieve a cached prompt template."""
+        if not self._require_client("CACHE"):
+            return None
+        key = f"cache:template:{name}"
+        raw = self.client.get(key)
+        if raw:
+            self._log("CACHE     ", "TMPL_HIT", f"{key}")
+            return raw
+        return None
+
+    def cache_model_metadata(self, model: str, metadata: Dict[str, Any], expires_in_sec: int = 300) -> None:
+        """Cache model registry metadata for fast retrieval."""
+        if not self._require_client("CACHE"):
+            return
+        key = f"cache:model_meta:{model}"
+        self.client.setex(key, expires_in_sec, json.dumps(metadata))
+        self._log("CACHE     ", "META_SET", f"{key} TTL={expires_in_sec}s")
+
+    def get_cached_model_metadata(self, model: str) -> Optional[Dict[str, Any]]:
+        """Retrieve cached model registry metadata."""
+        if not self._require_client("CACHE"):
+            return None
+        key = f"cache:model_meta:{model}"
+        raw = self.client.get(key)
+        if raw:
+            self._log("CACHE     ", "META_HIT", f"{key}")
+            return json.loads(raw)
+        return None
+
+    # =========================================================================
+    # 10b. Provider Health Registry
+    #
+    # health:provider:{provider}:{node_id}  →  HASH
+    #   status:      healthy | degraded | down
+    #   latency_ms:  avg response time
+    #   last_check:  epoch seconds
+    #   models:      comma-separated model list
+    #   TTL: 90 seconds (expires if health check loop dies)
+    # =========================================================================
+
+    def update_node_health(
+        self, provider: str, node_id: str, health_data: Dict[str, Any]
+    ) -> None:
+        """Update health state for an inference node."""
+        if not self.client:
+            return
+        key = f"health:provider:{provider}:{node_id}"
+        serialized = {k: str(v) for k, v in health_data.items()}
+        self.client.hset(key, mapping=serialized)
+        self.client.expire(key, 90)   # auto-expire if health checks stop
+        self._log("HEALTH    ", "UPDATE", f"{key}  status={health_data.get('status')}")
+
+    def get_node_health(
+        self, provider: str, node_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return health data for a specific node."""
+        if not self.client:
+            return None
+        return self.client.hgetall(f"health:provider:{provider}:{node_id}")
+
+    def get_all_node_health(self, provider: str) -> List[Dict[str, Any]]:
+        """Return health data for all nodes of a provider."""
+        if not self.client:
+            return []
+        results = []
+        for key in self.client.scan_iter(f"health:provider:{provider}:*"):
+            data = self.client.hgetall(key)
+            data["node_id"] = key.split(":")[-1]
+            results.append(data)
+        return results
+
+    def get_healthiest_node(self, provider: str) -> Optional[str]:
+        """Return the node_id with status=healthy and lowest latency."""
+        if not self.client:
+            return None
+        nodes = self.get_all_node_health(provider)
+        healthy = [n for n in nodes if n.get("status") == "healthy"]
+        if not healthy:
+            # Fall back to degraded nodes
+            healthy = [n for n in nodes if n.get("status") == "degraded"]
+        if not healthy:
+            return None
+        # Sort by latency (lowest first)
+        healthy.sort(key=lambda n: int(n.get("latency_ms", 99999)))
+        return healthy[0].get("node_id")
+
+    # =========================================================================
+    # 10c. Node Telemetry & Active Request Tracking (Phase E & G)
+    #
+    # node_telemetry:{provider}:{node_id}  →  HASH
+    #   active_requests:    number of active requests currently processing
+    #   vram_used_bytes:    VRAM bytes consumed
+    #   vram_used_mb:       VRAM MB consumed
+    #   latency_ms:         last benchmark latency
+    #   ttft_ms:            time to first token
+    #   tokens_per_sec:     generation speed
+    #   status:             healthy | degraded | down
+    #   TTL: 90 seconds (expires if health check loop dies)
+    # =========================================================================
+
+    def update_node_telemetry(
+        self, provider: str, node_id: str, telemetry_data: Dict[str, Any]
+    ) -> None:
+        """Update telemetry state for an inference node."""
+        if not self.client:
+            return
+        key = f"node_telemetry:{provider}:{node_id}"
+        serialized = {k: str(v) for k, v in telemetry_data.items()}
+        self.client.hset(key, mapping=serialized)
+        self.client.expire(key, 90)   # auto-expire if health loop stops
+        self._log("TELEMETRY ", "UPDATE", f"{key}  reqs={telemetry_data.get('active_requests')}")
+
+    def get_node_telemetry(
+        self, provider: str, node_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return telemetry data for a specific node."""
+        if not self.client:
+            return None
+        return self.client.hgetall(f"node_telemetry:{provider}:{node_id}")
+
+    def get_all_node_telemetry(self, provider: str) -> List[Dict[str, Any]]:
+        """Return telemetry data for all nodes of a provider."""
+        if not self.client:
+            return []
+        results = []
+        for key in self.client.scan_iter(f"node_telemetry:{provider}:*"):
+            data = self.client.hgetall(key)
+            data["node_id"] = key.split(":")[-1]
+            results.append(data)
+        return results
+
+    def increment_active_requests(self, provider: str, node_id: str) -> int:
+        """Increment active requests count for a node."""
+        if not self.client:
+            return 0
+        key = f"node_telemetry:{provider}:{node_id}"
+        val = self.client.hincrby(key, "active_requests", 1)
+        self._log("TELEMETRY ", "INCR_REQ", f"{key} -> {val}")
+        return val
+
+    def decrement_active_requests(self, provider: str, node_id: str) -> int:
+        """Decrement active requests count for a node."""
+        if not self.client:
+            return 0
+        key = f"node_telemetry:{provider}:{node_id}"
+        current = self.client.hget(key, "active_requests")
+        try:
+            val = int(current) if current else 0
+        except ValueError:
+            val = 0
+        if val > 0:
+            val = self.client.hincrby(key, "active_requests", -1)
+        else:
+            val = 0
+        self._log("TELEMETRY ", "DECR_REQ", f"{key} -> {val}")
+        return val
 
     # =========================================================================
     # 11. Gateway Statistics  (Hash: HINCRBY / HGETALL)

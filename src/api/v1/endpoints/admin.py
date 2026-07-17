@@ -150,3 +150,63 @@ def flush_redis(admin_user: UserSession = Depends(require_admin)):
         "message": "Redis flushed successfully.",
         "keys_deleted": deleted,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cluster status info
+# ---------------------------------------------------------------------------
+
+@router.get("/cluster", summary="Inference cluster health and telemetry")
+def get_cluster_status(admin_user: UserSession = Depends(require_admin)):
+    """[Admin] Return health and telemetry data for all nodes across providers (ollama, vllm)."""
+    providers = ["ollama", "vllm"]
+    cluster_data = {}
+    
+    for provider in providers:
+        health_nodes = redis_service.get_all_node_health(provider)
+        telemetry_nodes = redis_service.get_all_node_telemetry(provider)
+        
+        # Merge health and telemetry by node_id
+        nodes_dict = {}
+        for hn in health_nodes:
+            nid = hn.get("node_id")
+            if nid:
+                nodes_dict[nid] = {
+                    "id": nid,
+                    "url": hn.get("url"),
+                    "status": hn.get("status", "unknown"),
+                    "latency_ms": int(hn.get("latency_ms", 0)),
+                    "models": [m.strip() for m in hn.get("models", "").split(",") if m.strip()],
+                    "active_requests": 0,
+                    "vram_used_mb": 0.0,
+                    "tokens_per_sec": 0.0,
+                    "ttft_ms": 0
+                }
+        
+        for tn in telemetry_nodes:
+            nid = tn.get("node_id")
+            if nid:
+                if nid not in nodes_dict:
+                    nodes_dict[nid] = {
+                        "id": nid,
+                        "url": tn.get("url", ""),
+                        "status": tn.get("status", "unknown"),
+                        "latency_ms": int(tn.get("latency_ms", 0)),
+                        "models": [],
+                        "active_requests": 0,
+                        "vram_used_mb": 0.0,
+                        "tokens_per_sec": 0.0,
+                        "ttft_ms": 0
+                    }
+                try:
+                    nodes_dict[nid]["active_requests"] = int(tn.get("active_requests", 0))
+                    nodes_dict[nid]["vram_used_mb"] = float(tn.get("vram_used_mb", 0.0))
+                    nodes_dict[nid]["tokens_per_sec"] = float(tn.get("tokens_per_sec", 0.0))
+                    nodes_dict[nid]["ttft_ms"] = int(tn.get("ttft_ms", 0))
+                except (ValueError, TypeError):
+                    pass
+                
+        cluster_data[provider] = list(nodes_dict.values())
+        
+    return cluster_data
+

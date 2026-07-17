@@ -53,70 +53,96 @@ Background Synchronization Loop (60s tick):
 
 ## 🚀 Quick Start
 
-### 1. Start Redis
+You can run the gateway in **Containerized Mode** (recommended, runs all components including the gateway inside Docker) or **Hybrid Mode** (runs gateway locally, dependencies in Docker).
 
+---
+
+### Option A: Fully Containerized Mode (Recommended)
+
+This option runs the gateway and all dependencies inside Docker.
+
+#### 1. Spin up the cluster
+Start all services defined in `docker-compose.yml` (Gateway, PostgreSQL, Redis, 3x Ollama, Prometheus, Grafana):
 ```bash
-docker compose up -d redis
+docker compose up --build -d
+```
+Docker Compose will wait for the database, Redis, and Ollama nodes to report healthy before starting the gateway container.
+
+#### 2. Seed Ollama Models
+The three Ollama nodes start with empty data volumes. Run the helper script to pull the `gemma2:2b` model (configured in model pricing) into all three containers:
+
+* **Windows (PowerShell)**:
+  ```powershell
+  .\scripts\pull_models.ps1
+  ```
+* **Linux / Git Bash (Shell)**:
+  ```bash
+  chmod +x ./scripts/pull_models.sh
+  ./scripts/pull_models.sh
+  ```
+
+#### 3. Access the Gateway and Dashboard
+Navigate to:
+- **Interactive API Docs**: http://localhost:8000/docs
+- **Gateway Portal / Dashboard**: http://localhost:8000/portal
+- **Grafana Metrics**: http://localhost:3000 (Credentials: `admin` / `admin`)
+
+---
+
+### Option B: Hybrid Development Mode
+
+Use this option if you want to run the gateway server directly on your host machine while running postgres and redis dependencies in Docker.
+
+#### 1. Start Docker Dependencies (Redis + PostgreSQL)
+Spin up PostgreSQL and Redis only:
+```bash
+docker compose up -d db redis-cluster
 ```
 
-Verify connection:
-```bash
-docker exec -it route_mobile-redis-1 redis-cli ping
-# Expected: PONG
-```
-
-### 2. Install Dependencies
-
+#### 2. Install Dependencies Locally
 ```bash
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS/Linux
+# On Windows:
+.venv\Scripts\activate
+# On macOS/Linux:
+source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment
-
+#### 3. Configure Local Environment (`.env`)
 Create a `.env` file in the root directory:
-
 ```ini
 # FastAPI Settings
 PROJECT_NAME="Route Mobile API"
 API_V1_STR="/api/v1"
 DEBUG=true
 
-# AWS Configuration
-AWS_ACCESS_KEY_ID=placeholder_key
-AWS_SECRET_ACCESS_KEY=placeholder_secret
-AWS_REGION=us-east-1
-AWS_BUCKET_NAME=route-mobile-bucket
-
-# AI Configuration (Gemini / OpenAI / Mistral)
-GEMINI_API_KEY=placeholder_gemini_key
-OPENAI_API_KEY=placeholder_openai_key
-DEFAULT_MODEL=gemini-1.5-flash
-MISTRAL_API_KEY=your_mistral_api_key
-
-# Database & Redis Settings
+# Database & Redis (Point to localhost mapped ports)
 DATABASE_URL=sqlite:///./route_mobile.db
-REDIS_URL=redis://127.0.0.1:6379
+REDIS_URL=redis://localhost:6337
 REDIS_REQUIRED=true
 
-# JWT Auth Settings
-JWT_SECRET=your_random_256_bit_secret_here
+# Local Ollama URL (Assumes Ollama is running natively on your host machine)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_NODES=http://localhost:11434
+DEFAULT_PROVIDER=ollama
+DEFAULT_MODEL=gemma2:2b
+
+# Security & JWT
+JWT_SECRET=e42fa521f57912187bc9ba6f196bcf72e1ab5a7828de3e40776b6d51111956e1
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 
-### 4. Run the Server
-
+#### 4. Run the Server
 ```bash
 uvicorn src.main:app --reload
 ```
 
-The background usage+audit flusher task starts automatically on application startup.
+---
 
 ### 5. Open Interactive Documentation
-
 Navigate to http://127.0.0.1:8000/docs or open the local dashboard at http://127.0.0.1:8000/portal.
 
 ---

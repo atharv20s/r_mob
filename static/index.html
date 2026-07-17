@@ -513,7 +513,7 @@
       </div>
     </div>
 
-    <form id="login-form" onsubmit="handleLogin(event)">
+    <form id="login-form" onsubmit="handleAuthSubmit(event)">
       <div class="field">
         <label for="email-input">Email</label>
         <input id="email-input" type="email" value="admin@route.com" autocomplete="username" required />
@@ -526,9 +526,21 @@
         <span id="login-btn-text">Sign In</span>
       </button>
       <div id="login-error"></div>
+
+      <!-- API Key output shown only after successful registration -->
+      <div id="register-success" class="hidden" style="margin-top:16px; padding:12px; background:rgba(104,211,145,.1); border:1px dashed var(--accent-3); border-radius:var(--radius); font-size:12px;">
+        <span style="color:var(--accent-3); font-weight:600; display:block; margin-bottom:6px;">🎉 Registration Successful!</span>
+        <span class="muted" style="display:block; margin-bottom:6px;">Your API key (only shown once):</span>
+        <code id="api-key-display" class="mono" style="word-break:break-all; background:var(--surface-2); padding:4px 6px; display:block; border-radius:4px; border:1px solid var(--border); color:var(--text);"></code>
+        <span style="color:var(--accent-warn); display:block; margin-top:6px; font-size:11px;">⚠️ Save this key safely! It will not be shown again.</span>
+      </div>
     </form>
 
-    <p style="margin-top:18px;text-align:center;font-size:12px;color:var(--text-dim)">
+    <p id="toggle-auth-container" style="margin-top:18px;text-align:center;font-size:12px;color:var(--text-muted)">
+      Don't have an account? <a href="#" id="toggle-auth-btn" onclick="toggleAuthMode(event)" style="color:var(--accent); text-decoration:none; font-weight:500;">Sign Up</a>
+    </p>
+
+    <p id="admin-tip-text" style="margin-top:12px;text-align:center;font-size:12px;color:var(--text-dim)">
       Login as <strong style="color:var(--accent)">admin@route.com</strong> to unlock Redis Inspector
     </p>
   </div>
@@ -752,39 +764,99 @@ async function apiFetch(path, opts = {}) {
 }
 
 /* ── Login ────────────────────────────────────────────────────── */
-async function handleLogin(e) {
+let authMode = 'login';
+
+function toggleAuthMode(e) {
+  if (e) e.preventDefault();
+  const title = $('login-btn-text');
+  const toggleBtn = $('toggle-auth-btn');
+  const adminTip = $('admin-tip-text');
+  const errEl = $('login-error');
+  const successEl = $('register-success');
+  
+  errEl.textContent = '';
+  
+  if (authMode === 'login') {
+    authMode = 'register';
+    title.textContent = 'Sign Up';
+    toggleBtn.textContent = 'Sign In';
+    $('toggle-auth-container').innerHTML = `Already have an account? <a href="#" id="toggle-auth-btn" onclick="toggleAuthMode(event)" style="color:var(--accent); text-decoration:none; font-weight:500;">Sign In</a>`;
+    adminTip.classList.add('hidden');
+    if ($('email-input').value === 'admin@route.com') $('email-input').value = '';
+    if ($('password-input').value === 'adminpassword') $('password-input').value = '';
+  } else {
+    authMode = 'login';
+    title.textContent = 'Sign In';
+    toggleBtn.textContent = 'Sign Up';
+    $('toggle-auth-container').innerHTML = `Don't have an account? <a href="#" id="toggle-auth-btn" onclick="toggleAuthMode(event)" style="color:var(--accent); text-decoration:none; font-weight:500;">Sign Up</a>`;
+    adminTip.classList.remove('hidden');
+    if ($('email-input').value === '') $('email-input').value = 'admin@route.com';
+    if ($('password-input').value === '') $('password-input').value = 'adminpassword';
+  }
+}
+
+async function handleAuthSubmit(e) {
   e.preventDefault();
   const btn    = $('login-btn');
   const errEl  = $('login-error');
   const email  = $('email-input').value.trim();
   const pass   = $('password-input').value;
+  const successEl = $('register-success');
 
   btn.disabled = true;
   $('login-btn-text').innerHTML = '<span class="spinner"></span>';
   errEl.textContent = '';
 
   try {
-    const fd = new FormData();
-    fd.append('username', email);
-    fd.append('password', pass);
+    if (authMode === 'login') {
+      const fd = new FormData();
+      fd.append('username', email);
+      fd.append('password', pass);
 
-    const res = await fetch(`${API}/auth/login`, { method: 'POST', body: fd });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'Invalid credentials');
+      const res = await fetch(`${API}/auth/login`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || 'Invalid credentials');
+      }
+      const data = await res.json();
+      _token = data.access_token;
+
+      // Fetch user info to get role
+      const me = await apiFetch('/usage/me');
+      _role   = me.role;
+      _userId = me.id;
+
+      initApp(me);
+    } else {
+      // Register
+      const res = await fetch(`${API}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password: pass })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || 'Registration failed');
+      }
+      const data = await res.json();
+      
+      // Show register success
+      $('api-key-display').textContent = data.api_key;
+      successEl.classList.remove('hidden');
+      toast('Registration successful! Save your API key.', 'success');
+      
+      // Auto-switch to login mode so they can type password and login
+      toggleAuthMode();
+      // Keep their email prefilled
+      $('email-input').value = email;
+      // Clear password field to prompt them to enter it
+      $('password-input').value = '';
     }
-    const data = await res.json();
-    _token = data.access_token;
-
-    // Fetch user info to get role
-    const me = await apiFetch('/usage/me');
-    _role   = me.role;
-    _userId = me.id;
-
-    initApp(me);
   } catch (err) {
     errEl.textContent = '⚠ ' + err.message;
-    $('login-btn-text').textContent = 'Sign In';
+    toast(err.message, 'error');
+  } finally {
+    $('login-btn-text').textContent = authMode === 'login' ? 'Sign In' : 'Sign Up';
     btn.disabled = false;
   }
 }

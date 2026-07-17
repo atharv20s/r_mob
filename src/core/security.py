@@ -1,8 +1,26 @@
+"""
+src/core/security.py
+====================
+JWT and password utility functions.
+
+Functions:
+    verify_password       — bcrypt comparison
+    get_password_hash     — bcrypt hashing
+    create_access_token   — JWT access token with enterprise claims
+    decode_access_token   — decode and validate access token
+    create_refresh_token  — JWT refresh token (7-day default)
+    decode_refresh_token  — decode and validate refresh token
+"""
+
 from datetime import datetime, timedelta, UTC
 from typing import Any, Union, Optional
+import logging
 import jwt
 import bcrypt
 from src.core.config import settings
+
+logger = logging.getLogger("security")
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify standard plain text passwords against their bcrypt hashes."""
@@ -12,7 +30,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
             hashed_password.encode("utf-8")
         )
     except Exception as e:
-        print(f"Password verification failed: {e}")
+        logger.error("Password verification failed: %s", e)
         return False
 
 def get_password_hash(password: str) -> str:
@@ -57,7 +75,7 @@ def decode_access_token(token: str) -> Optional[str]:
         )
         return payload.get("sub")
     except jwt.PyJWTError as e:
-        print(f"Access token decode failed: {e}")
+        logger.warning("Access token decode failed: %s", e)
         return None
 
 def create_refresh_token(subject: Union[str, Any], expires_delta: Optional[timedelta] = None) -> str:
@@ -93,5 +111,5 @@ def decode_refresh_token(token: str) -> Optional[str]:
             return None
         return payload.get("sub")
     except jwt.PyJWTError as e:
-        print(f"Refresh token decode failed: {e}")
+        logger.warning("Refresh token decode failed: %s", e)
         return None

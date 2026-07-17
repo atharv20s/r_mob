@@ -8,6 +8,7 @@ from src.db.session import Base
 
 class UserRole(str, PyEnum):
     ADMIN = "admin"
+    ORG_ADMIN = "org_admin"
     USER = "user"
 
 
@@ -24,9 +25,11 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     role = Column(SqlEnum(UserRole), default=UserRole.USER, nullable=False)
     is_active = Column(Boolean, default=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.UTC))
 
     # Relationships
+    organization = relationship("Organization", back_populates="users")
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="user", cascade="all, delete-orphan")
     usage_records = relationship("UsageRecord", back_populates="user", cascade="all, delete-orphan")
@@ -51,7 +54,8 @@ class APIKey(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    key_hash = Column(String, unique=True, index=True, nullable=False)  # Bcrypt hash of api key
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    key_hash = Column(String, unique=True, index=True, nullable=False)  # SHA-256 hash of api key
     plan_id = Column(Integer, ForeignKey("plans.id"), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.UTC))
@@ -60,6 +64,7 @@ class APIKey(Base):
     # Relationships
     user = relationship("User", back_populates="api_keys")
     plan_rel = relationship("Plan", back_populates="api_keys")
+    organization = relationship("Organization")
 
 
 class UsageRecord(Base):

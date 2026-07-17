@@ -1,16 +1,29 @@
 import httpx
+import json
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, AsyncGenerator
 from src.core.config import settings
-from src.services.ai.base import BaseAIService
+from src.services.ai.base import BaseInferenceAdapter
 
-class MistralService(BaseAIService):
+class MistralAdapter(BaseInferenceAdapter):
+    """Adapter for the Mistral Cloud API."""
+
     def __init__(self):
         self.api_key = settings.MISTRAL_API_KEY
         self.api_url = "https://api.mistral.ai/v1/chat/completions"
+        self.provider_name = "mistral"
 
-    async def generate_text(self, prompt: str, model: Optional[str] = None, messages: Optional[list] = None) -> Dict[str, Any]:
-        if not self.api_key or self.api_key == "your_mistral_api_key":
+    async def generate(
+        self,
+        prompt: str,
+        model_name: Optional[str] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        temperature: float = 0.7,
+        max_retries: int = 3,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate a response using Mistral Cloud API."""
+        if not self.api_key or self.api_key == "your_mistral_api_key" or "placeholder" in self.api_key.lower():
             return {"success": False, "error": "Mistral API key is not configured"}
 
         headers = {
@@ -18,17 +31,15 @@ class MistralService(BaseAIService):
             "Content-Type": "application/json"
         }
         
-        model_name = model or "mistral-large-latest"
+        model = model_name or "mistral-large-latest"
         msgs = messages if messages else [{"role": "user", "content": prompt}]
         payload = {
-            "model": model_name,
+            "model": model,
             "messages": msgs,
-            "temperature": 0.7
+            "temperature": temperature
         }
 
-        max_retries = 3
         backoff_factor = 2.0
-        # connect timeout = 5s, read timeout = 30s
         timeout = httpx.Timeout(timeout=30.0, connect=5.0)
 
         for attempt in range(max_retries):
@@ -38,12 +49,10 @@ class MistralService(BaseAIService):
                 
                 if response.status_code == 429:
                     sleep_time = backoff_factor ** attempt
-                    print(f"Mistral API rate limit hit (429). Retrying in {sleep_time}s...")
                     await asyncio.sleep(sleep_time)
                     continue
                 elif response.status_code >= 500:
                     sleep_time = backoff_factor ** attempt
-                    print(f"Mistral API server error ({response.status_code}). Retrying in {sleep_time}s...")
                     await asyncio.sleep(sleep_time)
                     continue
 
@@ -61,9 +70,9 @@ class MistralService(BaseAIService):
                 
                 return {
                     "success": True,
-                    "provider": "mistral",
+                    "provider": self.provider_name,
                     "text": text,
-                    "model": response_json.get("model", model_name),
+                    "model": response_json.get("model", model),
                     "usage": {
                         "prompt_tokens": usage.get("prompt_tokens", 0),
                         "completion_tokens": usage.get("completion_tokens", 0),
@@ -72,7 +81,6 @@ class MistralService(BaseAIService):
                 }
             except httpx.TimeoutException:
                 sleep_time = backoff_factor ** attempt
-                print(f"Mistral API timeout. Retrying in {sleep_time}s...")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(sleep_time)
                 else:
@@ -81,3 +89,63 @@ class MistralService(BaseAIService):
                 return {"success": False, "error": str(e)}
 
         return {"success": False, "error": "Max retries exceeded for Mistral API"}
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        model_name: Optional[str] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> AsyncGenerator[str, None]:
+        """Stream responses from Mistral Cloud API."""
+        if not self.api_key or self.api_key == "your_mistral_api_key" or "placeholder" in self.api_key.lower():
+            yield "Error: Mistral API key is not configured"
+            return
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        model = model_name or "mistral-large-latest"
+        msgs = messages if messages else [{"role": "user", "content": prompt}]
+        payload = {
+            "model": model,
+            "messages": msgs,
+            "temperature": temperature,
+            "stream": True,
+        }
+
+        timeout = httpx.Timeout(timeout=30.0, connect=5.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("POST", self.api_url, json=payload, headers=headers) as response:
+                    if response.status_code != 200:
+                        yield f"Error: Received status code {response.status_code}"
+                        return
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                choices = data.get("choices", [])
+                                token = choices[0].get("delta", {}).get("content", "") if choices else ""
+                                if token:
+                                    yield token
+                            except Exception:
+                                pass
+        except Exception as e:
+            yield f"Error in stream generation: {str(e)}"
+
+    async def health_check(self) -> Dict[str, Any]:
+        """Mistral cloud service health check."""
+        if not self.api_key or self.api_key == "your_mistral_api_key" or "placeholder" in self.api_key.lower():
+            return {"status": "unconfigured", "provider": self.provider_name}
+        return {"status": "healthy", "provider": self.provider_name}
+
+
+# Legacy compatibility alias
+MistralService = MistralAdapter

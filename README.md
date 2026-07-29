@@ -4,12 +4,70 @@ FastAPI backend with **real Redis-backed** rate limiting, response caching, JWT 
 
 ---
 
-## ⚡ Production-Grade Architecture (Redis-First)
+## ⚡ Production-Grade Architecture (Redis-First & Hybrid Hybrid Inference)
 
-The architecture is optimized to keep SQL databases out of the request hot-path, achieving low latency and horizontal scalability.
+### System Topology Diagram
+
+```text
+                                  Internet
+                                     │
+                                     ▼
+                      http://52.65.114.230:800 (Gateway)
+                      http://52.65.114.230:3000 (Grafana)
+                                     │
+                         ┌───────────────────────┐
+                         │       AWS EC2         │
+                         │  Amazon Linux 2023    │
+                         └───────────┬───────────┘
+                                     │
+                             Docker Compose
+                                     │
+        ┌────────────────────────────┼────────────────────────────┐
+        │                            │                            │
+        ▼                            ▼                            ▼
+┌───────────────┐            ┌───────────────┐            ┌───────────────┐
+│  FastAPI      │            │  PostgreSQL   │            │    Redis      │
+│  AI Gateway   │◄──────────►│  16-Alpine    │            │   7-Alpine    │
+│  (Port 8000)  │            │  (Port 5432)  │            │  (Port 6337)  │
+│  - JWT Auth   │            │  - Users      │            │  - Cache      │
+│  - Rate Limit │            │  - Orgs/Plans │            │  - Sessions   │
+│  - OpenAI API │            │  - Audit Logs │            │  - Rate Limits│
+│  - Metrics    │            │  - Invoices   │            │  - Telemetry  │
+└───────┬───────┘            └───────────────┘            └───────────────┘
+        │
+        │ Scrapes Metrics /metrics
+        ▼
+┌───────────────┐            ┌───────────────┐
+│  Prometheus   │───────────►│    Grafana    │
+│  (Port 9090)  │            │  (Port 3000)  │
+└───────────────┘            └───────────────┘
+        │
+        │ Provider Routing (InferenceRouter)
+        ▼
+┌──────────────────┐
+│ Ollama Provider  │
+└────────┬─────────┘
+         │
+    Tailscale VPN (Encrypted Mesh Network)
+         │
+         ▼ (http://100.127.226.10:11434)
+┌─────────────────────────────────────────┐
+│ Your Local Windows Machine / Laptop     │
+│                                         │
+│  ┌───────────────────────────────────┐  │
+│  │ Ollama Inference Engine           │  │
+│  ├───────────────────────────────────┤  │
+│  │  - qwen2.5:7b (Default Active)    │  │
+│  │  - llama3:latest                  │  │
+│  │  - gemma2:2b                      │  │
+│  │  - glm4                           │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+```
+
+### Request Hot-Path (0 SQL Queries for 95% of requests)
 
 ```
-Request Hot-Path (0 SQL Queries for 95% of requests):
 Client ──► JWT Verify ──► Redis Blacklist Check ──► Redis Session Look-up (Plan & Limits)
                                                         │
  Client ◄─── Rate Limit Exceeded (429) ◄── [ZSET Sliding Window]
@@ -19,7 +77,7 @@ Client ──► JWT Verify ──► Redis Blacklist Check ──► Redis Sess
  Client ◄─── [Cache HIT] ◄───────────────── [Cache (Provider:Model:Hash)]
                                                         │ (Cache MISS)
                                                         ▼
- Client ◄─── Response ◄─── Audit Buffer ◄──── Mistral AI (Async Completion)
+ Client ◄─── Response ◄─── Audit Buffer ◄──── Tailscale Mesh ◄──── Ollama (Local GPU/CPU)
 ```
 
 ```

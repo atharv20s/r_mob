@@ -26,7 +26,7 @@ services:
       - VLLM_BASE_URL=http://vllm-cluster:8000
       - VLLM_NODES=http://vllm-cluster:8000
       - DEFAULT_PROVIDER=ollama
-      - DEFAULT_MODEL=llama3.1:8b
+      - DEFAULT_MODEL=qwen2.5:7b
       - FALLBACK_PROVIDERS=vllm,mistral,openai,gemini
       - PROMPT_SAFETY_ENABLED=true
       - METRICS_ENABLED=true

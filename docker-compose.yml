@@ -45,8 +45,6 @@ services:
         condition: service_healthy
       redis-cluster:
         condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
     command:
       - uvicorn
       - src.main:app
@@ -100,101 +98,6 @@ services:
       retries: 5
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # Ollama Node 1 — Hidden AI Inference Compute Node
-  # NEVER exposed to the internet. Only FastAPI can reach port 11434.
-  # ═══════════════════════════════════════════════════════════════════════════
-  ollama-1:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    networks:
-      - vpc_internal
-    # NOTE: Port 11434 is NOT exposed to host — completely hidden in VPC
-    volumes:
-      - ollama_data_1:/root/.ollama
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    # ── GPU Passthrough (uncomment if NVIDIA GPU available) ──────────────
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Ollama Node 2 — Second Inference Node (Cluster Redundancy)
-  # Health check loop auto-detects and routes traffic to healthiest node.
-  # ═══════════════════════════════════════════════════════════════════════════
-  ollama-2:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    networks:
-      - vpc_internal
-    volumes:
-      - ollama_data_2:/root/.ollama
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    # ── GPU Passthrough (uncomment if NVIDIA GPU available) ──────────────
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Ollama Node 3 — Third Inference Node (CPU Fallback)
-  # Can run lighter models (llama3.2) without GPU.
-  # ═══════════════════════════════════════════════════════════════════════════
-  ollama-3:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    networks:
-      - vpc_internal
-    volumes:
-      - ollama_data_3:/root/.ollama
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # One-shot model puller / initializer
-  # Waits for nodes to be healthy, pulls models in parallel, then exits.
-  # ═══════════════════════════════════════════════════════════════════════════
-  ollama-init:
-    image: curlimages/curl:latest
-    restart: "no"
-    networks:
-      - vpc_internal
-    depends_on:
-      ollama-1:
-        condition: service_healthy
-      ollama-2:
-        condition: service_healthy
-      ollama-3:
-        condition: service_healthy
-    command:
-      - sh
-      - -c
-      - |
-        echo "Seeding models to Ollama nodes in parallel..."
-        curl -s -X POST http://ollama-1:11434/api/pull -d '{"name": "gemma2:2b"}' &
-        curl -s -X POST http://ollama-2:11434/api/pull -d '{"name": "gemma2:2b"}' &
-        curl -s -X POST http://ollama-3:11434/api/pull -d '{"name": "tinyllama:latest"}' &
-        wait
-        echo "All models seeded successfully!"
-
-  # ═══════════════════════════════════════════════════════════════════════════
   # Prometheus — Internal Only (metrics scraping)
   # Scrapes /metrics from gateway every 15 seconds.
   # ═══════════════════════════════════════════════════════════════════════════
@@ -237,8 +140,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  ollama_data_1:
-  ollama_data_2:
-  ollama_data_3:
+
   prometheus_data:
   grafana_data:

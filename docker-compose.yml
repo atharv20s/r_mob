@@ -21,8 +21,8 @@ services:
       - PROJECT_NAME=Route Mobile API
       - DATABASE_URL=postgresql+psycopg2://postgres:postgres_password@db:5432/ai_gateway
       - REDIS_URL=redis://redis-cluster:6337
-      - OLLAMA_BASE_URL=http://ollama-1:11434
-      - OLLAMA_NODES=http://ollama-1:11434,http://ollama-2:11434,http://ollama-3:11434
+      - OLLAMA_BASE_URL=http://100.127.226.10:11434
+      - OLLAMA_NODES=http://100.127.226.10:11434
       - VLLM_BASE_URL=http://vllm-cluster:8000
       - VLLM_NODES=http://vllm-cluster:8000
       - DEFAULT_PROVIDER=ollama
